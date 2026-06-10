@@ -1,0 +1,17 @@
+[Unit]
+Description=Fujifilm stock monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+EnvironmentFile=-__CONFIG_DIR__/env
+Environment=PYTHONUNBUFFERED=1
+Environment=STATE_FILE=__CONFIG_DIR__/state.json
+ExecStart=__INSTALL_DIR__/run.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

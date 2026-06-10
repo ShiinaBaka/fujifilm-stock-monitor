@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.fujifilm_stock_state.json
+state.json
+.env
+env
