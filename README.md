@@ -25,7 +25,7 @@ It watches the product cards on the page. If a product changes from `sold out` t
 On the server:
 
 ```bash
-git clone https://github.com/YOUR_NAME/fujifilm-stock-monitor.git
+git clone https://github.com/ShiinaBaka/fujifilm-stock-monitor.git
 cd fujifilm-stock-monitor
 bash install.sh
 ```
