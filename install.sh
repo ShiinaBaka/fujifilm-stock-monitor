@@ -22,6 +22,7 @@ need_cmd systemctl
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$SYSTEMD_USER_DIR"
 install -m 0755 "$SCRIPT_DIR/fujifilm_stock_monitor.py" "$INSTALL_DIR/fujifilm_stock_monitor.py"
 install -m 0755 "$SCRIPT_DIR/run.sh" "$INSTALL_DIR/run.sh"
+install -m 0755 "$SCRIPT_DIR/resume.sh" "$INSTALL_DIR/resume.sh"
 
 if [ ! -f "$CONFIG_DIR/env" ]; then
   install -m 0600 "$SCRIPT_DIR/env.example" "$CONFIG_DIR/env"
@@ -53,3 +54,6 @@ echo "  systemctl --user start $SERVICE_NAME"
 echo
 echo "View logs:"
 echo "  journalctl --user -u $SERVICE_NAME -f"
+echo
+echo "Resume after missing a restock:"
+echo "  $INSTALL_DIR/resume.sh"

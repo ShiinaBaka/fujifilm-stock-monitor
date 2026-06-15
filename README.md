@@ -164,6 +164,23 @@ OnCalendar=*-*-01 00:00:00 Asia/Tokyo
 Persistent=true
 ```
 
+## Resume After Missing the Restock
+
+If the monitor stopped after notifying but you did not manage to buy the item:
+
+```bash
+~/.local/share/fujifilm-stock-monitor/resume.sh
+```
+
+This command:
+
+- Backs up the current state and stop marker.
+- Removes the active stop marker.
+- Resets the remembered stock state.
+- Restarts the service and performs an immediate check.
+
+Resetting the state is important. Removing only the marker may not produce another notification while the item remains continuously in stock.
+
 ## Uninstall
 
 ```bash
