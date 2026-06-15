@@ -52,6 +52,10 @@ class Product:
         return not self.sold_out
 
 
+class MonitoringComplete(Exception):
+    pass
+
+
 def get_attr(tag: str, attr_name: str) -> str:
     match = re.search(rf'\b{re.escape(attr_name)}\s*=\s*(["\'])(.*?)\1', tag, re.I | re.S)
     return html.unescape(match.group(2)).strip() if match else ""
@@ -193,6 +197,36 @@ def mark_failure_alerted(path: Path, failures: int) -> None:
     previous = load_full_state(path)
     previous["last_failure_alert_count"] = failures
     write_state(path, previous)
+
+
+def current_month() -> str:
+    return datetime.now().strftime("%Y-%m")
+
+
+def monthly_marker_path(directory: Path) -> Path:
+    return directory / f"{current_month()}.done"
+
+
+def should_skip_monitoring(args: argparse.Namespace) -> str | None:
+    if args.stop_marker and args.stop_marker.exists():
+        return f"Permanent stop marker exists: {args.stop_marker}"
+    if args.monthly_marker_dir:
+        marker = monthly_marker_path(args.monthly_marker_dir)
+        if marker.exists():
+            return f"Monthly restock already notified: {marker}"
+    return None
+
+
+def mark_monitoring_complete(args: argparse.Namespace, products: list[Product]) -> None:
+    payload = {
+        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        "url": args.url,
+        "in_stock": [product.url for product in products if product.in_stock],
+    }
+    if args.stop_marker:
+        write_state(args.stop_marker, payload)
+    if args.monthly_marker_dir:
+        write_state(monthly_marker_path(args.monthly_marker_dir), payload)
 
 
 def mac_notify(title: str, message: str, sound: str | None = "Glass") -> None:
@@ -364,6 +398,11 @@ def run_check(args: argparse.Namespace) -> int:
         raise RuntimeError("No products found. The page layout may have changed.")
 
     previous = load_state(args.state_file)
+    if args.monthly_marker_dir:
+        previous_state = load_full_state(args.state_file)
+        checked_at = str(previous_state.get("checked_at", ""))
+        if not checked_at.startswith(current_month()):
+            previous = {product.url: False for product in products}
     restocked = [
         product
         for product in products
@@ -387,6 +426,9 @@ def run_check(args: argparse.Namespace) -> int:
 
     if restocked:
         alert(restocked, args.webhook_url, args.ntfy_topic, args.serverchan_sendkey, args.open)
+        if args.stop_marker or args.monthly_marker_dir:
+            mark_monitoring_complete(args, products)
+            raise MonitoringComplete("Restock notified; monitoring paused by policy.")
     return 0
 
 
@@ -400,6 +442,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jitter", type=int, default=600, help="Random extra seconds added between checks.")
     parser.add_argument("--once", action="store_true", help="Run one check and exit.")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
+    parser.add_argument(
+        "--stop-marker",
+        type=Path,
+        help="Permanently stop after the first restock notification.",
+    )
+    parser.add_argument(
+        "--monthly-marker-dir",
+        type=Path,
+        help="Stop after one restock notification per calendar month.",
+    )
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--name-regex", help="Only monitor products whose name matches this regex.")
     parser.add_argument("--webhook-url", default=os.environ.get("STOCK_WEBHOOK_URL"))
@@ -434,9 +486,16 @@ def main() -> int:
     args = build_parser().parse_args()
 
     while True:
+        skip_reason = should_skip_monitoring(args)
+        if skip_reason:
+            print(f"[{now()}] monitoring skipped: {skip_reason}", flush=True)
+            return 0
         failed = False
         try:
             run_check(args)
+        except MonitoringComplete as exc:
+            print(f"[{now()}] {exc}", flush=True)
+            return 0
         except KeyboardInterrupt:
             print("\nStopped.", flush=True)
             return 130

@@ -10,7 +10,7 @@ EnvironmentFile=-__CONFIG_DIR__/env
 Environment=PYTHONUNBUFFERED=1
 Environment=STATE_FILE=__CONFIG_DIR__/state.json
 ExecStart=__INSTALL_DIR__/run.sh
-Restart=always
+Restart=on-failure
 RestartSec=30
 
 [Install]

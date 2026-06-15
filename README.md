@@ -17,6 +17,8 @@ It watches the product cards on the page. If a product changes from `sold out` t
 - Reuses cookies during the process lifetime.
 - Sends restock notifications.
 - Sends failure notifications after repeated failures.
+- Can stop permanently after the first restock notification.
+- Can send at most one restock notification per calendar month.
 - Supports ServerChan, ntfy.sh, and generic JSON webhooks.
 - Runs as a systemd user service.
 
@@ -136,6 +138,30 @@ Use another Fujifilm category:
 python3 fujifilm_stock_monitor.py \
   --url 'https://mall-jp.fujifilm.com/shop/c/c306030/' \
   --require-text 'チェキスクエア用フィルム'
+```
+
+Stop permanently after the first restock notification:
+
+```bash
+python3 fujifilm_stock_monitor.py \
+  --stop-marker ~/.config/fujifilm-stock-monitor/stopped.json
+```
+
+After a restock notification, later starts will exit without requesting the store page while that marker exists.
+
+Send at most one restock notification per calendar month:
+
+```bash
+python3 fujifilm_stock_monitor.py \
+  --monthly-marker-dir ~/.config/fujifilm-stock-monitor/monthly
+```
+
+The monitor writes a `YYYY-MM.done` marker after notifying. A monthly systemd timer can start the service again on the first day of each month:
+
+```ini
+[Timer]
+OnCalendar=*-*-01 00:00:00 Asia/Tokyo
+Persistent=true
 ```
 
 ## Uninstall

@@ -10,6 +10,16 @@ FAILURE_ALERT_REPEAT="${FAILURE_ALERT_REPEAT:-24}"
 STATE_FILE="${STATE_FILE:-$HOME/.config/fujifilm-stock-monitor/state.json}"
 URL="${URL:-https://mall-jp.fujifilm.com/shop/c/c306010/}"
 REQUIRE_TEXT="${REQUIRE_TEXT:-チェキ用フィルム}"
+STOP_MARKER="${STOP_MARKER:-}"
+MONTHLY_MARKER_DIR="${MONTHLY_MARKER_DIR:-}"
+
+EXTRA_ARGS=()
+if [ -n "$STOP_MARKER" ]; then
+  EXTRA_ARGS+=(--stop-marker "$STOP_MARKER")
+fi
+if [ -n "$MONTHLY_MARKER_DIR" ]; then
+  EXTRA_ARGS+=(--monthly-marker-dir "$MONTHLY_MARKER_DIR")
+fi
 
 exec /usr/bin/python3 "$SCRIPT_DIR/fujifilm_stock_monitor.py" \
   --url "$URL" \
@@ -19,4 +29,5 @@ exec /usr/bin/python3 "$SCRIPT_DIR/fujifilm_stock_monitor.py" \
   --failure-alert-after "$FAILURE_ALERT_AFTER" \
   --failure-alert-repeat "$FAILURE_ALERT_REPEAT" \
   --state-file "$STATE_FILE" \
-  --ipv4
+  --ipv4 \
+  "${EXTRA_ARGS[@]}"
