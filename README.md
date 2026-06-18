@@ -70,6 +70,31 @@ Check service status:
 systemctl --user status fujifilm-stock-monitor.service
 ```
 
+## Maintenance Helper
+
+The install script also installs a small helper:
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl status
+```
+
+Useful commands:
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl health
+~/.local/share/fujifilm-stock-monitor/fujifilmctl check
+~/.local/share/fujifilm-stock-monitor/fujifilmctl logs
+~/.local/share/fujifilm-stock-monitor/fujifilmctl test-push
+~/.local/share/fujifilm-stock-monitor/fujifilmctl pause
+~/.local/share/fujifilm-stock-monitor/fujifilmctl resume
+```
+
+If monthly per-product notification is enabled and you missed a restock for one product, allow that product to notify again:
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl restore g16587294
+```
+
 ## Notification Options
 
 ### ServerChan
