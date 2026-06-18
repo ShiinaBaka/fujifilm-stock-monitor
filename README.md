@@ -18,7 +18,7 @@ It watches the product cards on the page. If a product changes from `sold out` t
 - Sends restock notifications.
 - Sends failure notifications after repeated failures.
 - Can stop permanently after the first restock notification.
-- Can send at most one restock notification per calendar month.
+- Can send at most one restock notification per product per calendar month.
 - Supports ServerChan, ntfy.sh, and generic JSON webhooks.
 - Runs as a systemd user service.
 
@@ -149,14 +149,14 @@ python3 fujifilm_stock_monitor.py \
 
 After a restock notification, later starts will exit without requesting the store page while that marker exists.
 
-Send at most one restock notification per calendar month:
+Send at most one restock notification per product per calendar month:
 
 ```bash
 python3 fujifilm_stock_monitor.py \
   --monthly-marker-dir ~/.config/fujifilm-stock-monitor/monthly
 ```
 
-The monitor writes a `YYYY-MM.done` marker after notifying. A monthly systemd timer can start the service again on the first day of each month:
+The monitor writes a `YYYY-MM.done` marker with the product URLs already notified that month. Other products continue to be monitored and can still send notifications.
 
 ```ini
 [Timer]

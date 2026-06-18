@@ -207,26 +207,53 @@ def monthly_marker_path(directory: Path) -> Path:
     return directory / f"{current_month()}.done"
 
 
+def load_monthly_notified(marker: Path) -> set[str]:
+    data = load_full_state(marker)
+    notified = data.get("notified", {})
+    if isinstance(notified, dict):
+        return {str(url) for url in notified}
+    if isinstance(notified, list):
+        return {str(url) for url in notified}
+    legacy_in_stock = data.get("in_stock", [])
+    if isinstance(legacy_in_stock, list):
+        return {str(url) for url in legacy_in_stock}
+    return set()
+
+
 def should_skip_monitoring(args: argparse.Namespace) -> str | None:
     if args.stop_marker and args.stop_marker.exists():
         return f"Permanent stop marker exists: {args.stop_marker}"
-    if args.monthly_marker_dir:
-        marker = monthly_marker_path(args.monthly_marker_dir)
-        if marker.exists():
-            return f"Monthly restock already notified: {marker}"
     return None
 
 
-def mark_monitoring_complete(args: argparse.Namespace, products: list[Product]) -> None:
+def mark_restock_notified(args: argparse.Namespace, products: list[Product]) -> None:
+    notified_at = datetime.now().isoformat(timespec="seconds")
     payload = {
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": notified_at,
         "url": args.url,
-        "in_stock": [product.url for product in products if product.in_stock],
+        "notified": {
+            product.url: {
+                "name": product.name,
+                "price": product.price,
+                "notified_at": notified_at,
+            }
+            for product in products
+        },
     }
     if args.stop_marker:
         write_state(args.stop_marker, payload)
     if args.monthly_marker_dir:
-        write_state(monthly_marker_path(args.monthly_marker_dir), payload)
+        marker = monthly_marker_path(args.monthly_marker_dir)
+        previous = load_full_state(marker)
+        previous_notified = previous.get("notified", {})
+        if not isinstance(previous_notified, dict):
+            previous_notified = {
+                url: {"notified_at": str(previous.get("completed_at", ""))}
+                for url in load_monthly_notified(marker)
+            }
+        previous_notified.update(payload["notified"])
+        payload["notified"] = previous_notified
+        write_state(marker, payload)
 
 
 def mac_notify(title: str, message: str, sound: str | None = "Glass") -> None:
@@ -398,7 +425,9 @@ def run_check(args: argparse.Namespace) -> int:
         raise RuntimeError("No products found. The page layout may have changed.")
 
     previous = load_state(args.state_file)
+    monthly_notified: set[str] = set()
     if args.monthly_marker_dir:
+        monthly_notified = load_monthly_notified(monthly_marker_path(args.monthly_marker_dir))
         previous_state = load_full_state(args.state_file)
         checked_at = str(previous_state.get("checked_at", ""))
         if not checked_at.startswith(current_month()):
@@ -407,6 +436,7 @@ def run_check(args: argparse.Namespace) -> int:
         product
         for product in products
         if product.in_stock and (args.alert_on_first_run or previous.get(product.url) is False)
+        and product.url not in monthly_notified
     ]
 
     save_state(args.state_file, products)
@@ -427,7 +457,8 @@ def run_check(args: argparse.Namespace) -> int:
     if restocked:
         alert(restocked, args.webhook_url, args.ntfy_topic, args.serverchan_sendkey, args.open)
         if args.stop_marker or args.monthly_marker_dir:
-            mark_monitoring_complete(args, products)
+            mark_restock_notified(args, restocked)
+        if args.stop_marker:
             raise MonitoringComplete("Restock notified; monitoring paused by policy.")
     return 0
 
@@ -450,7 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--monthly-marker-dir",
         type=Path,
-        help="Stop after one restock notification per calendar month.",
+        help="Send at most one restock notification per product per calendar month.",
     )
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--name-regex", help="Only monitor products whose name matches this regex.")
