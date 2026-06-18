@@ -1,30 +1,31 @@
 # Fujifilm Stock Monitor
 
-A small, dependency-free Python monitor for Fujifilm Mall category stock.
+一个轻量、无第三方 Python 依赖的 Fujifilm Mall 商品补货监控脚本。
 
-Default target:
+默认监控：
 
 ```text
 https://mall-jp.fujifilm.com/shop/c/c306010/
 ```
 
-It watches the product cards on the page. If a product changes from `sold out` to `in stock`, it sends a notification.
+脚本会解析分类页里的商品卡片。当商品从“无货”变成“有货”时发送推送。
 
-## Features
+## 功能
 
-- No third-party Python packages.
-- Gentle default schedule: once per hour plus 0-10 minutes random jitter.
-- Reuses cookies during the process lifetime.
-- Sends restock notifications.
-- Sends failure notifications after repeated failures.
-- Can stop permanently after the first restock notification.
-- Can send at most one restock notification per product per calendar month.
-- Supports ServerChan, ntfy.sh, and generic JSON webhooks.
-- Runs as a systemd user service.
+- 不需要第三方 Python 包。
+- 默认温和频率：每小时一次，外加 0-10 分钟随机延迟。
+- 进程内复用 Cookie。
+- 支持补货推送。
+- 支持连续失败后的失效报警。
+- 支持第一次补货推送后永久停止。
+- 支持每款商品每个自然月最多推送一次，其他商品继续监控。
+- 支持 Server 酱、ntfy.sh 和通用 JSON Webhook。
+- 支持 systemd user service 后台运行。
+- 自带 `fujifilmctl` 维护工具，方便查状态、看日志、测试推送和恢复某款商品。
 
-## One-Command Install
+## 一键安装
 
-On the server:
+在服务器上运行：
 
 ```bash
 git clone https://github.com/ShiinaBaka/fujifilm-stock-monitor.git
@@ -32,72 +33,81 @@ cd fujifilm-stock-monitor
 bash install.sh
 ```
 
-Then edit the config:
+编辑配置：
 
 ```bash
 nano ~/.config/fujifilm-stock-monitor/env
 ```
 
-For ServerChan, set:
+如果使用 Server 酱：
 
 ```bash
 SERVERCHAN_SENDKEY=YOUR_SENDKEY
 ```
 
-Start it:
+启动服务：
 
 ```bash
 systemctl --user start fujifilm-stock-monitor.service
 ```
 
-## Test
+## 测试
 
-Run one check:
+运行一次检查：
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/fujifilm_stock_monitor.py --once --print-products --ipv4
 ```
 
-Watch logs:
+查看日志：
 
 ```bash
 journalctl --user -u fujifilm-stock-monitor.service -f
 ```
 
-Check service status:
+查看服务状态：
 
 ```bash
 systemctl --user status fujifilm-stock-monitor.service
 ```
 
-## Maintenance Helper
+## 维护工具
 
-The install script also installs a small helper:
+安装脚本会同时安装：
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl status
 ```
 
-Useful commands:
+常用命令：
 
 ```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl status
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl health
+~/.local/share/fujifilm-stock-monitor/fujifilmctl config
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl check
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl logs
+~/.local/share/fujifilm-stock-monitor/fujifilmctl notified
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl test-push
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl pause
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl resume
 ```
 
-If monthly per-product notification is enabled and you missed a restock for one product, allow that product to notify again:
+如果启用了“每款商品每月最多推送一次”，但某款没抢到，可以只恢复这一款本月再次推送：
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl restore g16587294
 ```
 
-## Notification Options
+如果想清空本月所有商品去重记录：
 
-### ServerChan
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl clear-notified
+```
+
+## 推送渠道
+
+### Server 酱
 
 ```bash
 SERVERCHAN_SENDKEY=SCTxxxxxxxxxxxxxxxx
@@ -109,23 +119,23 @@ SERVERCHAN_SENDKEY=SCTxxxxxxxxxxxxxxxx
 STOCK_NTFY_TOPIC=my-private-topic-name
 ```
 
-Subscribe to that topic in the ntfy app or web UI.
+在 ntfy app 或网页端订阅这个 topic 即可。
 
-### Generic Webhook
+### 通用 Webhook
 
 ```bash
 STOCK_WEBHOOK_URL=https://example.com/webhook
 ```
 
-The payload is:
+请求体格式：
 
 ```json
 {"text": "title\nmessage"}
 ```
 
-## Defaults
+## 默认行为
 
-The installed service runs through `run.sh` with defaults equivalent to:
+安装后的服务通过 `run.sh` 启动，默认等价于：
 
 ```bash
 python3 fujifilm_stock_monitor.py \
@@ -137,27 +147,27 @@ python3 fujifilm_stock_monitor.py \
   --ipv4
 ```
 
-Meaning:
+含义：
 
-- Check every 60-70 minutes.
-- Notify after 3 consecutive failures.
-- If still failing, notify again every 24 additional failures.
+- 每 60-70 分钟检查一次。
+- 连续失败 3 次后报警。
+- 如果仍然失败，每多失败 24 次再报警一次。
 
-## Manual Usage
+## 手动使用
 
-Check once:
+检查一次：
 
 ```bash
 python3 fujifilm_stock_monitor.py --once --print-products --ipv4
 ```
 
-Monitor a subset of products:
+只监控部分商品：
 
 ```bash
 python3 fujifilm_stock_monitor.py --name-regex '1パック|モノクローム'
 ```
 
-Use another Fujifilm category:
+监控其他 Fujifilm 分类：
 
 ```bash
 python3 fujifilm_stock_monitor.py \
@@ -165,58 +175,56 @@ python3 fujifilm_stock_monitor.py \
   --require-text 'チェキスクエア用フィルム'
 ```
 
-Stop permanently after the first restock notification:
+第一次补货推送后永久停止：
 
 ```bash
 python3 fujifilm_stock_monitor.py \
   --stop-marker ~/.config/fujifilm-stock-monitor/stopped.json
 ```
 
-After a restock notification, later starts will exit without requesting the store page while that marker exists.
+写入永久停止标记后，后续启动会直接退出，不再请求商店页面。
 
-Send at most one restock notification per product per calendar month:
+每款商品每个自然月最多推送一次：
 
 ```bash
 python3 fujifilm_stock_monitor.py \
   --monthly-marker-dir ~/.config/fujifilm-stock-monitor/monthly
 ```
 
-The monitor writes a `YYYY-MM.done` marker with the product URLs already notified that month. Other products continue to be monitored and can still send notifications.
+脚本会写入 `YYYY-MM.done`，里面记录本月已经推送过的商品 URL。已推送的那款本月不再重复推送，其他商品仍然继续监控。
 
-```ini
-[Timer]
-OnCalendar=*-*-01 00:00:00 Asia/Tokyo
-Persistent=true
-```
+## 没抢到时恢复
 
-## Resume After Missing the Restock
-
-If the monitor stopped after notifying but you did not manage to buy the item:
+如果监控已经推送过，但你没抢到，可以恢复：
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/resume.sh
 ```
 
-This command:
+这个命令会：
 
-- Backs up the current state and stop marker.
-- Removes the active stop marker.
-- Resets the remembered stock state.
-- Restarts the service and performs an immediate check.
+- 备份当前状态和停止标记。
+- 删除当前停止标记。
+- 重置已记住的库存状态。
+- 重启服务并立刻检查一次。
 
-Resetting the state is important. Removing only the marker may not produce another notification while the item remains continuously in stock.
+如果只是某一款商品没抢到，更推荐用：
 
-## Uninstall
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl restore g16587294
+```
+
+## 卸载
 
 ```bash
 bash uninstall.sh
 ```
 
-The uninstall script keeps `~/.config/fujifilm-stock-monitor/` so your state and notification keys are not removed accidentally.
+卸载脚本会保留 `~/.config/fujifilm-stock-monitor/`，避免误删状态和通知密钥。
 
-## Notes
+## 注意
 
-Use this responsibly. Keep the interval gentle, avoid parallel checks, and do not use it to create load on the site.
+请负责任地使用。保持温和检查频率，避免并发请求，不要给网站制造负担。
 
 ## License
 

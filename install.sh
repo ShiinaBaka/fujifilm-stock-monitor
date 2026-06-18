@@ -27,8 +27,8 @@ install -m 0755 "$SCRIPT_DIR/fujifilmctl.sh" "$INSTALL_DIR/fujifilmctl"
 
 if [ ! -f "$CONFIG_DIR/env" ]; then
   install -m 0600 "$SCRIPT_DIR/env.example" "$CONFIG_DIR/env"
-  echo "Created config: $CONFIG_DIR/env"
-  echo "Edit it before starting if you want ServerChan/ntfy/webhook notifications."
+  echo "已创建配置文件：$CONFIG_DIR/env"
+  echo "如果需要 Server 酱、ntfy 或 Webhook 推送，请先编辑这个文件。"
 fi
 
 sed \
@@ -45,19 +45,19 @@ if command -v loginctl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
 fi
 
 echo
-echo "Installed $APP_NAME."
+echo "已安装 $APP_NAME。"
 echo
-echo "Run one check:"
+echo "运行一次检查："
 echo "  $INSTALL_DIR/fujifilm_stock_monitor.py --once --print-products --ipv4"
 echo
-echo "Start service:"
+echo "启动服务："
 echo "  systemctl --user start $SERVICE_NAME"
 echo
-echo "View logs:"
+echo "查看日志："
 echo "  journalctl --user -u $SERVICE_NAME -f"
 echo
-echo "Maintenance helper:"
+echo "维护工具："
 echo "  $INSTALL_DIR/fujifilmctl status"
 echo
-echo "Resume after missing a restock:"
+echo "没抢到时恢复监控："
 echo "  $INSTALL_DIR/resume.sh"

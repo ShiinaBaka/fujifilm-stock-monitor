@@ -13,6 +13,6 @@ systemctl --user daemon-reload || true
 
 rm -rf "$INSTALL_DIR"
 
-echo "Removed program files."
-echo "Config kept at: $CONFIG_DIR"
-echo "Remove it manually if you no longer need state or notification keys."
+echo "已移除程序文件。"
+echo "配置仍保留在：$CONFIG_DIR"
+echo "如果不再需要状态和通知密钥，请手动删除该目录。"

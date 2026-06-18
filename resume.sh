@@ -36,5 +36,5 @@ backup_and_remove "$STATE_FILE"
 systemctl --user reset-failed "$SERVICE_NAME"
 systemctl --user restart "$SERVICE_NAME"
 
-echo "Monitoring resumed and an immediate check was started."
-echo "Previous state and markers were backed up with suffix: backup-$STAMP"
+echo "监控已恢复，并已启动一次即时检查。"
+echo "旧状态和标记已用这个后缀备份：backup-$STAMP"
