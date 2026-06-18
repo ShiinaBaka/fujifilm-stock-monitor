@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+CONFIG_FILE="${CONFIG_FILE:-$HOME/.config/fujifilm-stock-monitor/config.json}"
 INTERVAL_SECONDS="${INTERVAL_SECONDS:-3600}"
 JITTER_SECONDS="${JITTER_SECONDS:-600}"
 FAILURE_ALERT_AFTER="${FAILURE_ALERT_AFTER:-3}"
@@ -12,6 +13,10 @@ URL="${URL:-https://mall-jp.fujifilm.com/shop/c/c306010/}"
 REQUIRE_TEXT="${REQUIRE_TEXT:-チェキ用フィルム}"
 STOP_MARKER="${STOP_MARKER:-}"
 MONTHLY_MARKER_DIR="${MONTHLY_MARKER_DIR:-}"
+
+if [ -f "$CONFIG_FILE" ]; then
+  exec /usr/bin/python3 "$SCRIPT_DIR/fujifilm_stock_monitor.py" --config "$CONFIG_FILE"
+fi
 
 EXTRA_ARGS=()
 if [ -n "$STOP_MARKER" ]; then

@@ -32,6 +32,7 @@ from typing import Iterable
 DEFAULT_URL = "https://mall-jp.fujifilm.com/shop/c/c306010/"
 DEFAULT_REQUIRE_TEXT = "チェキ用フィルム"
 DEFAULT_STATE = Path(__file__).with_name(".fujifilm_stock_state.json")
+DEFAULT_TASK_NAME = "Fujifilm"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -237,6 +238,7 @@ def mark_restock_notified(args: argparse.Namespace, products: list[Product]) -> 
     payload = {
         "updated_at": notified_at,
         "url": args.url,
+        "task": args.task_name,
         "notified": {
             product.url: {
                 "name": product.name,
@@ -298,7 +300,8 @@ def ntfy_notify(topic_or_url: str, title: str, message: str, first_url: str) -> 
     else:
         url = "https://ntfy.sh/" + topic_or_url.strip("/")
 
-    body = (message + "\n" + first_url).encode("utf-8")
+    body_text = message if first_url in message else message + "\n" + first_url
+    body = body_text.encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
@@ -316,10 +319,11 @@ def ntfy_notify(topic_or_url: str, title: str, message: str, first_url: str) -> 
 
 def serverchan_notify(sendkey: str, title: str, message: str, first_url: str) -> None:
     url = f"https://sctapi.ftqq.com/{sendkey}.send"
+    desp = message if first_url in message else message + "\n\n" + first_url
     body = urllib.parse.urlencode(
         {
             "title": title,
-            "desp": message + "\n\n" + first_url,
+            "desp": desp,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -336,6 +340,7 @@ def serverchan_notify(sendkey: str, title: str, message: str, first_url: str) ->
 
 
 def alert(
+    task_name: str,
     products: list[Product],
     webhook_url: str | None,
     ntfy_topic: str | None,
@@ -343,10 +348,16 @@ def alert(
     open_first: bool,
 ) -> bool:
     first = products[0]
-    title = "Fujifilm stock available"
-    lines = [f"{p.name} {p.price}".strip() for p in products[:5]]
+    title = f"Fujifilm 补货：{task_name}"
+    lines = [
+        f"监控任务：{task_name}",
+        f"发现时间：{now()}",
+        f"有货数量：{len(products)}",
+        "",
+    ]
+    lines.extend(f"{p.name} {p.price}\n{p.url}".strip() for p in products[:5])
     if len(products) > 5:
-        lines.append(f"...and {len(products) - 5} more")
+        lines.append(f"另有 {len(products) - 5} 个商品有货。")
     message = "\n".join(lines)
 
     print(f"[{now()}] RESTOCK: {message}", flush=True)
@@ -358,7 +369,7 @@ def alert(
     if webhook_url:
         remote_channels += 1
         try:
-            webhook_notify(webhook_url, title, message + "\n" + first.url)
+            webhook_notify(webhook_url, title, message if first.url in message else message + "\n" + first.url)
             remote_successes += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[{now()}] Webhook notification failed: {exc}", file=sys.stderr, flush=True)
@@ -406,8 +417,13 @@ def notify_failure(
     if last_alert_count and failures < last_alert_count + args.failure_alert_repeat:
         return
 
-    title = "Fujifilm monitor failure"
-    message = f"Consecutive failures: {failures}\nError: {error}\nURL: {args.url}"
+    title = f"Fujifilm 监控可能失效：{args.task_name}"
+    message = (
+        f"监控任务：{args.task_name}\n"
+        f"连续失败：{failures} 次\n"
+        f"错误：{error}\n"
+        f"监控 URL：{args.url}"
+    )
     print(f"[{now()}] FAILURE ALERT: {message}", file=sys.stderr, flush=True)
 
     if args.webhook_url:
@@ -429,6 +445,31 @@ def notify_failure(
             print(f"[{now()}] ServerChan failure notification failed: {exc}", file=sys.stderr, flush=True)
 
     mark_failure_alerted(args.state_file, failures)
+
+
+def notify_status(args: argparse.Namespace, products: list[Product]) -> None:
+    in_stock = [product for product in products if product.in_stock]
+    title = f"Fujifilm 每日运行状态：{args.task_name}"
+    lines = [
+        f"监控任务：{args.task_name}",
+        f"检查时间：{now()}",
+        f"商品总数：{len(products)}",
+        f"当前有货：{len(in_stock)}",
+        f"当前缺货：{len(products) - len(in_stock)}",
+        f"监控 URL：{args.url}",
+    ]
+    if in_stock:
+        lines.append("")
+        lines.extend(f"{product.name} {product.price}\n{product.url}".strip() for product in in_stock[:5])
+    message = "\n".join(lines)
+    first_url = in_stock[0].url if in_stock else args.url
+
+    if args.webhook_url:
+        webhook_notify(args.webhook_url, title, message)
+    if args.ntfy_topic:
+        ntfy_notify(args.ntfy_topic, title, message, first_url)
+    if args.serverchan_sendkey:
+        serverchan_notify(args.serverchan_sendkey, title, message, first_url)
 
 
 def now() -> str:
@@ -475,7 +516,7 @@ def run_check(args: argparse.Namespace) -> int:
     in_stock = [product for product in products if product.in_stock]
     sold_out_count = len(products) - len(in_stock)
     print(
-        f"[{now()}] checked {len(products)} products: "
+        f"[{now()}] {args.task_name}: checked {len(products)} products: "
         f"{len(in_stock)} in stock, {sold_out_count} sold out",
         flush=True,
     )
@@ -486,12 +527,138 @@ def run_check(args: argparse.Namespace) -> int:
             print(f"  - {status}: {product.name} {product.price}".strip(), flush=True)
 
     if restocked:
-        notified = alert(restocked, args.webhook_url, args.ntfy_topic, args.serverchan_sendkey, args.open)
+        notified = alert(
+            args.task_name,
+            restocked,
+            args.webhook_url,
+            args.ntfy_topic,
+            args.serverchan_sendkey,
+            args.open,
+        )
         if notified and (args.stop_marker or args.monthly_marker_dir):
             mark_restock_notified(args, restocked)
         if notified and args.stop_marker:
             raise MonitoringComplete("Restock notified; monitoring paused by policy.")
+    if args.status_notify:
+        notify_status(args, products)
     return 0
+
+
+def run_once_with_handling(args: argparse.Namespace) -> int:
+    skip_reason = should_skip_monitoring(args)
+    if skip_reason:
+        print(f"[{now()}] {args.task_name}: monitoring skipped: {skip_reason}", flush=True)
+        return 0
+    try:
+        run_check(args)
+        return 0
+    except MonitoringComplete as exc:
+        print(f"[{now()}] {args.task_name}: {exc}", flush=True)
+        return 0
+    except KeyboardInterrupt:
+        raise
+    except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
+        error = str(exc)
+        failures, last_alert_count = save_failure(args.state_file, error)
+        print(
+            f"[{now()}] {args.task_name}: check failed ({failures} consecutive): {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        notify_failure(args, error, failures, last_alert_count)
+        return 1
+
+
+def load_config(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot read config file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Config file must contain a JSON object.")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise RuntimeError("Config file must contain a non-empty tasks list.")
+    return data
+
+
+def path_from_config(value: str | None, base_dir: Path) -> Path | None:
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def task_args_from_config(config: dict, task: dict, config_path: Path, cli_args: argparse.Namespace) -> argparse.Namespace:
+    if not isinstance(task, dict):
+        raise RuntimeError("Each task in config must be an object.")
+    config_dir = config_path.parent
+    defaults = config.get("defaults", {})
+    if not isinstance(defaults, dict):
+        defaults = {}
+    notifications = config.get("notifications", {})
+    if not isinstance(notifications, dict):
+        notifications = {}
+
+    name = str(task.get("name") or DEFAULT_TASK_NAME)
+    state_default = f"state/{re.sub(r'[^A-Za-z0-9_.-]+', '_', name).strip('_') or 'task'}.json"
+    state_file = path_from_config(str(task.get("state_file") or defaults.get("state_file") or state_default), config_dir)
+    monthly_marker_dir = path_from_config(task.get("monthly_marker_dir") or defaults.get("monthly_marker_dir"), config_dir)
+    stop_marker = path_from_config(task.get("stop_marker") or defaults.get("stop_marker"), config_dir)
+
+    return argparse.Namespace(
+        task_name=name,
+        url=str(task.get("url") or defaults.get("url") or DEFAULT_URL),
+        require_text=str(task.get("require_text") or defaults.get("require_text") or DEFAULT_REQUIRE_TEXT),
+        interval=int(task.get("interval", defaults.get("interval", 3600))),
+        jitter=int(task.get("jitter", defaults.get("jitter", 600))),
+        once=cli_args.once,
+        state_file=state_file or DEFAULT_STATE,
+        stop_marker=stop_marker,
+        monthly_marker_dir=monthly_marker_dir,
+        timeout=int(task.get("timeout", defaults.get("timeout", 20))),
+        name_regex=task.get("name_regex") or defaults.get("name_regex"),
+        webhook_url=notifications.get("webhook_url") or os.environ.get("STOCK_WEBHOOK_URL"),
+        ntfy_topic=notifications.get("ntfy_topic") or os.environ.get("STOCK_NTFY_TOPIC"),
+        serverchan_sendkey=notifications.get("serverchan_sendkey") or os.environ.get("SERVERCHAN_SENDKEY"),
+        ipv4=bool(task.get("ipv4", defaults.get("ipv4", True))),
+        failure_alert_after=int(task.get("failure_alert_after", defaults.get("failure_alert_after", 3))),
+        failure_alert_repeat=int(task.get("failure_alert_repeat", defaults.get("failure_alert_repeat", 24))),
+        open=bool(task.get("open", defaults.get("open", False))),
+        status_notify=bool(task.get("status_notify", defaults.get("status_notify", False))),
+        alert_on_first_run=bool(task.get("alert_on_first_run", defaults.get("alert_on_first_run", False))),
+        print_products=cli_args.print_products,
+        html_file=task.get("html_file"),
+        html_encoding=str(task.get("html_encoding", defaults.get("html_encoding", "shift_jis"))),
+    )
+
+
+def run_config(config_path: Path, cli_args: argparse.Namespace) -> int:
+    config = load_config(config_path)
+    tasks = [task_args_from_config(config, task, config_path, cli_args) for task in config["tasks"]]
+    if cli_args.once:
+        return 1 if any(run_once_with_handling(task) for task in tasks) else 0
+
+    next_runs = {i: 0.0 for i in range(len(tasks))}
+    while True:
+        now_ts = time.time()
+        ran = False
+        for i, task in enumerate(tasks):
+            if now_ts < next_runs[i]:
+                continue
+            try:
+                run_once_with_handling(task)
+            except KeyboardInterrupt:
+                print("\nStopped.", flush=True)
+                return 130
+            delay = max(task.interval, 10) + (random.randint(0, task.jitter) if task.jitter > 0 else 0)
+            next_runs[i] = time.time() + delay
+            ran = True
+        if not ran:
+            time.sleep(max(min(next_runs.values()) - time.time(), 1))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -499,10 +666,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Monitor Fujifilm Mall category stock and notify on restock."
     )
     parser.add_argument("--url", default=DEFAULT_URL)
+    parser.add_argument("--task-name", default=DEFAULT_TASK_NAME)
+    parser.add_argument("--config", type=Path, help="JSON config file with one or more monitor tasks.")
     parser.add_argument("--require-text", default=DEFAULT_REQUIRE_TEXT)
     parser.add_argument("--interval", type=int, default=3600, help="Seconds between checks.")
     parser.add_argument("--jitter", type=int, default=600, help="Random extra seconds added between checks.")
     parser.add_argument("--once", action="store_true", help="Run one check and exit.")
+    parser.add_argument("--status-notify", action="store_true", help="Send a status summary after a successful check.")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
     parser.add_argument(
         "--stop-marker",
@@ -546,31 +716,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.config:
+        try:
+            return run_config(args.config.expanduser(), args)
+        except RuntimeError as exc:
+            print(f"[{now()}] config error: {exc}", file=sys.stderr, flush=True)
+            return 2
 
     while True:
-        skip_reason = should_skip_monitoring(args)
-        if skip_reason:
-            print(f"[{now()}] monitoring skipped: {skip_reason}", flush=True)
-            return 0
-        failed = False
         try:
-            run_check(args)
-        except MonitoringComplete as exc:
-            print(f"[{now()}] {exc}", flush=True)
-            return 0
+            failed = bool(run_once_with_handling(args))
         except KeyboardInterrupt:
             print("\nStopped.", flush=True)
             return 130
-        except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
-            failed = True
-            error = str(exc)
-            failures, last_alert_count = save_failure(args.state_file, error)
-            print(
-                f"[{now()}] check failed ({failures} consecutive): {error}",
-                file=sys.stderr,
-                flush=True,
-            )
-            notify_failure(args, error, failures, last_alert_count)
 
         if args.once:
             return 1 if failed else 0

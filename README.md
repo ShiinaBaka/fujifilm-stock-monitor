@@ -22,6 +22,8 @@ https://mall-jp.fujifilm.com/shop/c/c306010/
 - 支持 Server 酱、ntfy.sh 和通用 JSON Webhook。
 - 支持 systemd user service 后台运行。
 - 自带 `fujifilmctl` 维护工具，方便查状态、看日志、测试推送和恢复某款商品。
+- 安装时带交互式向导，可直接生成 `config.json`。
+- 支持一个配置文件定义多个监控任务。
 
 ## 一键安装
 
@@ -44,6 +46,14 @@ nano ~/.config/fujifilm-stock-monitor/env
 ```bash
 SERVERCHAN_SENDKEY=YOUR_SENDKEY
 ```
+
+安装脚本也会生成：
+
+```bash
+~/.config/fujifilm-stock-monitor/config.json
+```
+
+服务启动时会优先使用这个多任务配置。
 
 启动服务：
 
@@ -69,6 +79,51 @@ journalctl --user -u fujifilm-stock-monitor.service -f
 
 ```bash
 systemctl --user status fujifilm-stock-monitor.service
+```
+
+## 常见任务速查
+
+我想确认服务是否正常：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl health
+```
+
+我想看现在监控了什么：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl config
+```
+
+我想立刻检查一次：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl check
+```
+
+我想测试 Server 酱推送：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl test-push
+```
+
+我想看本月哪些商品已经推送过：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl notified
+```
+
+我没抢到某款，想让它本月再次推送：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl restore g16587294
+```
+
+我想暂停/恢复监控：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl pause
+~/.local/share/fujifilm-stock-monitor/fujifilmctl resume
 ```
 
 ## 维护工具
@@ -135,7 +190,7 @@ STOCK_WEBHOOK_URL=https://example.com/webhook
 
 ## 默认行为
 
-安装后的服务通过 `run.sh` 启动，默认等价于：
+安装后的服务通过 `run.sh` 启动。如果存在 `~/.config/fujifilm-stock-monitor/config.json`，会使用多任务配置；否则使用传统环境变量模式，默认等价于：
 
 ```bash
 python3 fujifilm_stock_monitor.py \
@@ -192,6 +247,65 @@ python3 fujifilm_stock_monitor.py \
 ```
 
 脚本会写入 `YYYY-MM.done`，里面记录本月已经推送过的商品 URL。已推送的那款本月不再重复推送，其他商品仍然继续监控。
+
+## 多任务配置
+
+可以在一个 `config.json` 里定义多个监控任务：
+
+```json
+{
+  "notifications": {
+    "serverchan_sendkey": "SCTxxxxxxxxxxxxxxxx"
+  },
+  "defaults": {
+    "interval": 3600,
+    "jitter": 600,
+    "failure_alert_after": 3,
+    "failure_alert_repeat": 24,
+    "ipv4": true
+  },
+  "tasks": [
+    {
+      "name": "mini 相纸",
+      "url": "https://mall-jp.fujifilm.com/shop/c/c306010/",
+      "require_text": "チェキ用フィルム",
+      "state_file": "state/mini.json",
+      "monthly_marker_dir": "monthly/mini"
+    },
+    {
+      "name": "WIDE 400",
+      "url": "https://mall-jp.fujifilm.com/shop/c/cinswide/",
+      "require_text": "“チェキ” instax WIDE 400",
+      "state_file": "state/wide.json",
+      "stop_marker": "stopped/wide.json"
+    }
+  ]
+}
+```
+
+手动运行多任务配置：
+
+```bash
+python3 fujifilm_stock_monitor.py --config ~/.config/fujifilm-stock-monitor/config.json --once --print-products
+```
+
+仓库里也提供了 `config.example.json`。
+
+## 自动测试
+
+运行测试：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+测试覆盖：
+
+- 商品解析。
+- 每款商品每月只推一次。
+- 其他商品继续监控。
+- 推送失败时不写去重标记。
+- 多任务配置一次性检查。
 
 ## 没抢到时恢复
 

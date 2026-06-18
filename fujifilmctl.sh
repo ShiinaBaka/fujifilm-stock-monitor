@@ -5,6 +5,7 @@ APP_NAME="fujifilm-stock-monitor"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/share/$APP_NAME}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/$APP_NAME}"
 ENV_FILE="$CONFIG_DIR/env"
+CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config.json}"
 STATE_FILE="${STATE_FILE:-$CONFIG_DIR/state.json}"
 SERVICE_NAME="$APP_NAME.service"
 
@@ -74,8 +75,48 @@ PY
 
 current_month_marker() {
   load_env
-  if [ -n "${MONTHLY_MARKER_DIR:-}" ]; then
+  if [ -f "$CONFIG_FILE" ]; then
+    python3 - "$CONFIG_FILE" "$(date +%Y-%m)" <<'PY'
+import json, sys
+from pathlib import Path
+
+config = json.loads(Path(sys.argv[1]).read_text())
+month = sys.argv[2]
+base = Path(sys.argv[1]).parent
+for task in config.get("tasks", []):
+    marker_dir = task.get("monthly_marker_dir") or config.get("defaults", {}).get("monthly_marker_dir")
+    if marker_dir:
+        p = Path(marker_dir).expanduser()
+        if not p.is_absolute():
+            p = base / p
+        print(str(p / f"{month}.done"))
+PY
+  elif [ -n "${MONTHLY_MARKER_DIR:-}" ]; then
     printf '%s/%s.done\n' "$MONTHLY_MARKER_DIR" "$(date +%Y-%m)"
+  fi
+}
+
+state_files() {
+  if [ -f "$CONFIG_FILE" ]; then
+    python3 - "$CONFIG_FILE" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+config = json.loads(path.read_text())
+base = path.parent
+defaults = config.get("defaults", {})
+for task in config.get("tasks", []):
+    name = str(task.get("name") or "task")
+    fallback = "state/" + (re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "task") + ".json"
+    state = task.get("state_file") or defaults.get("state_file") or fallback
+    p = Path(state).expanduser()
+    if not p.is_absolute():
+        p = base / p
+    print(p)
+PY
+  else
+    printf '%s\n' "$STATE_FILE"
   fi
 }
 
@@ -84,7 +125,9 @@ status() {
   systemctl --user --no-pager --full status "$SERVICE_NAME" | sed -n '1,60p' || true
   echo
   echo "== 状态 =="
-  show_state "$STATE_FILE"
+  state_files | while IFS= read -r state; do
+    show_state "$state"
+  done
   echo
   echo "== 标记 =="
   load_env
@@ -92,10 +135,13 @@ status() {
     echo "永久暂停标记："
     ls -l "$STOP_MARKER" 2>/dev/null || echo "  无"
   fi
-  marker="$(current_month_marker || true)"
-  if [ -n "${marker:-}" ]; then
+  markers="$(current_month_marker || true)"
+  if [ -n "${markers:-}" ]; then
     echo "本月商品去重标记："
-    show_notified_file "$marker"
+    printf '%s\n' "$markers" | while IFS= read -r marker; do
+      echo "  $marker"
+      show_notified_file "$marker"
+    done
   fi
 }
 
@@ -130,7 +176,20 @@ config_summary() {
   load_env
   echo "== 配置 =="
   echo "配置文件：$ENV_FILE"
+  echo "多任务配置：$CONFIG_FILE"
   echo "服务名：$SERVICE_NAME"
+  if [ -f "$CONFIG_FILE" ]; then
+    python3 - "$CONFIG_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+
+config = json.loads(Path(sys.argv[1]).read_text())
+print(f"任务数量：{len(config.get('tasks', []))}")
+for task in config.get("tasks", []):
+    print(f"- {task.get('name', '未命名')}：{task.get('url', '')}")
+PY
+    return
+  fi
   echo "监控 URL：${URL:-https://mall-jp.fujifilm.com/shop/c/c306010/}"
   echo "页面标题校验：${REQUIRE_TEXT:-チェキ用フィルム}"
   echo "检查间隔：${INTERVAL_SECONDS:-3600} 秒"
@@ -145,28 +204,41 @@ config_summary() {
 }
 
 notified() {
-  marker="$(current_month_marker || true)"
-  if [ -z "${marker:-}" ]; then
+  markers="$(current_month_marker || true)"
+  if [ -z "${markers:-}" ]; then
     echo "未启用 MONTHLY_MARKER_DIR。"
     return
   fi
-  show_notified_file "$marker"
+  printf '%s\n' "$markers" | while IFS= read -r marker; do
+    echo "$marker"
+    show_notified_file "$marker"
+  done
 }
 
 clear_notified() {
-  marker="$(current_month_marker || true)"
-  if [ -z "${marker:-}" ] || [ ! -f "$marker" ]; then
+  markers="$(current_month_marker || true)"
+  if [ -z "${markers:-}" ]; then
     echo "本月没有商品去重记录。"
     return
   fi
-  cp -a "$marker" "$marker.backup-$(date +%Y%m%d-%H%M%S)"
-  rm -f "$marker"
+  found=0
+  printf '%s\n' "$markers" | while IFS= read -r marker; do
+    if [ -f "$marker" ]; then
+      cp -a "$marker" "$marker.backup-$(date +%Y%m%d-%H%M%S)"
+      rm -f "$marker"
+      found=1
+    fi
+  done
   systemctl --user restart "$SERVICE_NAME"
   echo "已清空本月商品去重记录，并重启监控。"
 }
 
 check_once() {
   load_env
+  if [ -f "$CONFIG_FILE" ]; then
+    "$INSTALL_DIR/fujifilm_stock_monitor.py" --config "$CONFIG_FILE" --once --print-products
+    return
+  fi
   "$INSTALL_DIR/fujifilm_stock_monitor.py" \
     --once --print-products --ipv4 \
     --url "${URL:-https://mall-jp.fujifilm.com/shop/c/c306010/}" \
@@ -176,6 +248,10 @@ check_once() {
 
 check_summary() {
   load_env
+  if [ -f "$CONFIG_FILE" ]; then
+    "$INSTALL_DIR/fujifilm_stock_monitor.py" --config "$CONFIG_FILE" --once
+    return
+  fi
   "$INSTALL_DIR/fujifilm_stock_monitor.py" \
     --once --ipv4 \
     --url "${URL:-https://mall-jp.fujifilm.com/shop/c/c306010/}" \
@@ -215,13 +291,15 @@ restore_item() {
     usage
     exit 2
   fi
-  marker="$(current_month_marker || true)"
-  if [ -z "${marker:-}" ] || [ ! -f "$marker" ]; then
+  markers="$(current_month_marker || true)"
+  if [ -z "${markers:-}" ]; then
     echo "本月没有商品去重记录，无需恢复。"
     return
   fi
-  cp -a "$marker" "$marker.backup-$(date +%Y%m%d-%H%M%S)"
-  python3 - "$marker" "$item" <<'PY'
+  printf '%s\n' "$markers" | while IFS= read -r marker; do
+    [ -f "$marker" ] || continue
+    cp -a "$marker" "$marker.backup-$(date +%Y%m%d-%H%M%S)"
+    python3 - "$marker" "$item" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -244,7 +322,9 @@ if removed:
 else:
     print(f"没有找到匹配商品：{item}")
 PY
-  python3 - "$STATE_FILE" "$item" <<'PY'
+  done
+  state_files | while IFS= read -r state; do
+    python3 - "$state" "$item" <<'PY'
 import json, sys
 from pathlib import Path
 
@@ -268,6 +348,7 @@ if changed:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     print("已同步重置状态文件，下一轮可再次触发该商品。")
 PY
+  done
   systemctl --user restart "$SERVICE_NAME"
 }
 

@@ -1,0 +1,30 @@
+{
+  "notifications": {
+    "serverchan_sendkey": "",
+    "ntfy_topic": "",
+    "webhook_url": ""
+  },
+  "defaults": {
+    "interval": 3600,
+    "jitter": 600,
+    "failure_alert_after": 3,
+    "failure_alert_repeat": 24,
+    "ipv4": true
+  },
+  "tasks": [
+    {
+      "name": "mini 相纸",
+      "url": "https://mall-jp.fujifilm.com/shop/c/c306010/",
+      "require_text": "チェキ用フィルム",
+      "state_file": "state/mini.json",
+      "monthly_marker_dir": "monthly/mini"
+    },
+    {
+      "name": "WIDE 400",
+      "url": "https://mall-jp.fujifilm.com/shop/c/cinswide/",
+      "require_text": "“チェキ” instax WIDE 400",
+      "state_file": "state/wide.json",
+      "stop_marker": "stopped/wide.json"
+    }
+  ]
+}
