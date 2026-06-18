@@ -13,6 +13,7 @@ import http.cookiejar
 import html
 import json
 import os
+import platform
 import random
 import re
 import socket
@@ -38,6 +39,7 @@ USER_AGENT = (
 )
 COOKIE_JAR = http.cookiejar.CookieJar()
 OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(COOKIE_JAR))
+IPV4_FORCED = False
 
 
 @dataclass
@@ -103,12 +105,16 @@ def fetch_page(url: str, timeout: int) -> str:
 
 
 def force_ipv4() -> None:
+    global IPV4_FORCED
+    if IPV4_FORCED:
+        return
     original_getaddrinfo = socket.getaddrinfo
 
     def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):  # noqa: A002
         return original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
     socket.getaddrinfo = getaddrinfo_ipv4
+    IPV4_FORCED = True
 
 
 def parse_products(page_html: str, base_url: str) -> list[Product]:
@@ -257,11 +263,19 @@ def mark_restock_notified(args: argparse.Namespace, products: list[Product]) -> 
 
 
 def mac_notify(title: str, message: str, sound: str | None = "Glass") -> None:
+    if platform.system() != "Darwin" or not os.environ.get("DISPLAY"):
+        return
     script = 'display notification ' f'{json.dumps(message)} ' f'with title {json.dumps(title)}'
     if sound:
         script += f" sound name {json.dumps(sound)}"
     try:
-        subprocess.run(["osascript", "-e", script], check=False, timeout=10)
+        subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            timeout=10,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -327,7 +341,7 @@ def alert(
     ntfy_topic: str | None,
     serverchan_sendkey: str | None,
     open_first: bool,
-) -> None:
+) -> bool:
     first = products[0]
     title = "Fujifilm stock available"
     lines = [f"{p.name} {p.price}".strip() for p in products[:5]]
@@ -338,22 +352,30 @@ def alert(
     print(f"[{now()}] RESTOCK: {message}", flush=True)
     print(first.url, flush=True)
     mac_notify(title, message)
+    remote_channels = 0
+    remote_successes = 0
 
     if webhook_url:
+        remote_channels += 1
         try:
             webhook_notify(webhook_url, title, message + "\n" + first.url)
+            remote_successes += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[{now()}] Webhook notification failed: {exc}", file=sys.stderr, flush=True)
 
     if ntfy_topic:
+        remote_channels += 1
         try:
             ntfy_notify(ntfy_topic, title, message, first.url)
+            remote_successes += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[{now()}] ntfy notification failed: {exc}", file=sys.stderr, flush=True)
 
     if serverchan_sendkey:
+        remote_channels += 1
         try:
             serverchan_notify(serverchan_sendkey, title, message, first.url)
+            remote_successes += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[{now()}] ServerChan notification failed: {exc}", file=sys.stderr, flush=True)
 
@@ -362,6 +384,15 @@ def alert(
             subprocess.run(["open", first.url], check=False, timeout=10)
         except (OSError, subprocess.SubprocessError):
             pass
+    if remote_channels and not remote_successes:
+        print(
+            f"[{now()}] all configured restock notification channels failed; "
+            "restock marker was not updated",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    return True
 
 
 def notify_failure(
@@ -455,10 +486,10 @@ def run_check(args: argparse.Namespace) -> int:
             print(f"  - {status}: {product.name} {product.price}".strip(), flush=True)
 
     if restocked:
-        alert(restocked, args.webhook_url, args.ntfy_topic, args.serverchan_sendkey, args.open)
-        if args.stop_marker or args.monthly_marker_dir:
+        notified = alert(restocked, args.webhook_url, args.ntfy_topic, args.serverchan_sendkey, args.open)
+        if notified and (args.stop_marker or args.monthly_marker_dir):
             mark_restock_notified(args, restocked)
-        if args.stop_marker:
+        if notified and args.stop_marker:
             raise MonitoringComplete("Restock notified; monitoring paused by policy.")
     return 0
 

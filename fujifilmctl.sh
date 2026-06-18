@@ -105,7 +105,11 @@ show_notified_file() {
     python3 - "$marker" <<'PY'
 import json, sys
 from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text())
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+except Exception as exc:
+    print(f"  读取失败：{exc}")
+    raise SystemExit(0)
 notified = data.get("notified", {})
 print(f"  本月已通知 {len(notified)} 个商品")
 for url, info in notified.items():
@@ -239,6 +243,30 @@ if removed:
         print(f"  {url}")
 else:
     print(f"没有找到匹配商品：{item}")
+PY
+  python3 - "$STATE_FILE" "$item" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+item = sys.argv[2].rstrip("/")
+if not path.exists():
+    raise SystemExit(0)
+try:
+    data = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(0)
+stock = data.get("stock")
+if not isinstance(stock, dict):
+    raise SystemExit(0)
+changed = False
+for url in list(stock):
+    if url.rstrip("/") == item or item in url:
+        stock[url] = False
+        changed = True
+if changed:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    print("已同步重置状态文件，下一轮可再次触发该商品。")
 PY
   systemctl --user restart "$SERVICE_NAME"
 }
