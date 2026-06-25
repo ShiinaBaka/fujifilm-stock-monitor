@@ -38,6 +38,9 @@ class WebTests(unittest.TestCase):
                     admin_key_hash=web.make_admin_key_hash("secret"),
                     session_secret="session-secret",
                     secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
                     allow_no_auth=False,
                     systemctl_scope="user",
                 )
@@ -64,6 +67,9 @@ class WebTests(unittest.TestCase):
                     admin_key_hash=web.make_admin_key_hash("secret"),
                     session_secret="session-secret",
                     secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
                     allow_no_auth=False,
                     systemctl_scope="user",
                 )
@@ -100,6 +106,9 @@ class WebTests(unittest.TestCase):
                     admin_key_hash=web.make_admin_key_hash("secret"),
                     session_secret="session-secret",
                     secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
                     allow_no_auth=False,
                     systemctl_scope="user",
                 )
@@ -107,6 +116,32 @@ class WebTests(unittest.TestCase):
             cookie = app.make_session_cookie()
             self.assertTrue(app.verify_session_cookie(cookie))
             self.assertFalse(app.verify_session_cookie(cookie + "x"))
+
+    def test_challenge_token_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app = web.WebApp(
+                argparse.Namespace(
+                    config=Path(td) / "config.json",
+                    service_name="fujifilm-stock-monitor.service",
+                    install_dir=Path(td),
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
+                    allow_no_auth=False,
+                    systemctl_scope="user",
+                )
+            )
+            token = app.make_challenge_token("login", "abc")
+            self.assertEqual(app.verify_challenge_token(token, "login"), "abc")
+            with self.assertRaises(ValueError):
+                app.verify_challenge_token(token, "register")
+
+    def test_cbor_decode_simple_map(self) -> None:
+        self.assertEqual(web.cbor_decode(bytes.fromhex("a201020363616263")), {1: 2, 3: "abc"})
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -29,6 +31,7 @@ DEFAULT_SERVICE = f"{APP_NAME}.service"
 FUJIFILM_HOST = "mall-jp.fujifilm.com"
 SESSION_SECONDS = 12 * 60 * 60
 PBKDF2_ITERATIONS = 260000
+WEBAUTHN_CHALLENGE_SECONDS = 5 * 60
 
 
 def safe_task_slug(text: str) -> str:
@@ -122,6 +125,179 @@ def verify_admin_key_hash(admin_key: str, encoded_hash: str) -> bool:
         return False
 
 
+class CborReader:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.index = 0
+
+    def read(self):
+        if self.index >= len(self.data):
+            raise ValueError("Unexpected end of CBOR data.")
+        first = self.data[self.index]
+        self.index += 1
+        major = first >> 5
+        info = first & 0x1F
+        value = self.read_length(info)
+        if major == 0:
+            return value
+        if major == 1:
+            return -1 - value
+        if major == 2:
+            chunk = self.data[self.index : self.index + value]
+            self.index += value
+            return chunk
+        if major == 3:
+            chunk = self.data[self.index : self.index + value]
+            self.index += value
+            return chunk.decode("utf-8")
+        if major == 4:
+            return [self.read() for _ in range(value)]
+        if major == 5:
+            return {self.read(): self.read() for _ in range(value)}
+        if major == 7:
+            if info == 20:
+                return False
+            if info == 21:
+                return True
+            if info == 22:
+                return None
+        raise ValueError(f"Unsupported CBOR major type: {major}")
+
+    def read_length(self, info: int) -> int:
+        if info < 24:
+            return info
+        sizes = {24: 1, 25: 2, 26: 4, 27: 8}
+        if info not in sizes:
+            raise ValueError("Unsupported CBOR length.")
+        size = sizes[info]
+        if self.index + size > len(self.data):
+            raise ValueError("Unexpected end of CBOR length.")
+        value = int.from_bytes(self.data[self.index : self.index + size], "big")
+        self.index += size
+        return value
+
+
+def cbor_decode(data: bytes):
+    reader = CborReader(data)
+    value = reader.read()
+    if reader.index != len(data):
+        raise ValueError("Trailing CBOR data.")
+    return value
+
+
+def der_len(length: int) -> bytes:
+    if length < 128:
+        return bytes([length])
+    raw = length.to_bytes((length.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def der(tag: int, body: bytes) -> bytes:
+    return bytes([tag]) + der_len(len(body)) + body
+
+
+def der_seq(*items: bytes) -> bytes:
+    return der(0x30, b"".join(items))
+
+
+def der_oid(oid: str) -> bytes:
+    parts = [int(part) for part in oid.split(".")]
+    body = bytes([parts[0] * 40 + parts[1]])
+    for part in parts[2:]:
+        encoded = [part & 0x7F]
+        part >>= 7
+        while part:
+            encoded.append(0x80 | (part & 0x7F))
+            part >>= 7
+        body += bytes(reversed(encoded))
+    return der(0x06, body)
+
+
+def der_int(value: int) -> bytes:
+    raw = value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
+    if raw[0] & 0x80:
+        raw = b"\x00" + raw
+    return der(0x02, raw)
+
+
+def der_bit_string(body: bytes) -> bytes:
+    return der(0x03, b"\x00" + body)
+
+
+def pem_public_key_from_cose(cose_key: dict) -> str:
+    kty = cose_key.get(1)
+    alg = cose_key.get(3)
+    if kty == 2 and alg == -7:
+        crv = cose_key.get(-1)
+        x = cose_key.get(-2)
+        y = cose_key.get(-3)
+        if crv != 1 or not isinstance(x, bytes) or not isinstance(y, bytes) or len(x) != 32 or len(y) != 32:
+            raise ValueError("Unsupported EC2 public key.")
+        spki = der_seq(
+            der_seq(der_oid("1.2.840.10045.2.1"), der_oid("1.2.840.10045.3.1.7")),
+            der_bit_string(b"\x04" + x + y),
+        )
+    elif kty == 3 and alg == -257:
+        n = cose_key.get(-1)
+        e = cose_key.get(-2)
+        if not isinstance(n, bytes) or not isinstance(e, bytes):
+            raise ValueError("Unsupported RSA public key.")
+        rsa_public = der_seq(der_int(int.from_bytes(n, "big")), der_int(int.from_bytes(e, "big")))
+        spki = der_seq(
+            der_seq(der_oid("1.2.840.113549.1.1.1"), der(0x05, b"")),
+            der_bit_string(rsa_public),
+        )
+    else:
+        raise ValueError("Unsupported WebAuthn public key algorithm.")
+
+    body = base64.encodebytes(spki).decode("ascii").replace("\n", "")
+    lines = "\n".join(body[i : i + 64] for i in range(0, len(body), 64))
+    return f"-----BEGIN PUBLIC KEY-----\n{lines}\n-----END PUBLIC KEY-----\n"
+
+
+def verify_signature_with_openssl(pem: str, data: bytes, signature: bytes) -> bool:
+    if not shutil.which("openssl"):
+        raise RuntimeError("openssl is required for passkey signature verification.")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        public_key = root / "public.pem"
+        payload = root / "payload.bin"
+        sig = root / "signature.bin"
+        public_key.write_text(pem, encoding="utf-8")
+        payload.write_bytes(data)
+        sig.write_bytes(signature)
+        completed = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-verify", str(public_key), "-signature", str(sig), str(payload)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return completed.returncode == 0
+
+
+def parse_authenticator_data(auth_data: bytes) -> dict:
+    if len(auth_data) < 37:
+        raise ValueError("Authenticator data is too short.")
+    rp_id_hash = auth_data[:32]
+    flags = auth_data[32]
+    sign_count = struct.unpack(">I", auth_data[33:37])[0]
+    result = {"rp_id_hash": rp_id_hash, "flags": flags, "sign_count": sign_count}
+    if flags & 0x40:
+        if len(auth_data) < 55:
+            raise ValueError("Attested credential data is too short.")
+        credential_id_length = struct.unpack(">H", auth_data[53:55])[0]
+        credential_start = 55
+        credential_end = credential_start + credential_id_length
+        credential_id = auth_data[credential_start:credential_end]
+        cose_key = cbor_decode(auth_data[credential_end:])
+        if not isinstance(cose_key, dict):
+            raise ValueError("Invalid COSE public key.")
+        result.update({"credential_id": credential_id, "cose_key": cose_key})
+    return result
+
+
 class WebApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.config_path = args.config.expanduser()
@@ -136,6 +312,13 @@ class WebApp:
             or self.admin_key_hash
         )
         self.secure_cookie = args.secure_cookie or os.environ.get("FUJIFILM_COOKIE_SECURE") == "1"
+        self.rp_id = args.rp_id or os.environ.get("FUJIFILM_WEBAUTHN_RP_ID", "")
+        self.rp_name = args.rp_name or os.environ.get("FUJIFILM_WEBAUTHN_RP_NAME", "Fujifilm Stock Monitor")
+        self.allowed_origins = [
+            item.strip()
+            for item in (args.allowed_origin or os.environ.get("FUJIFILM_WEBAUTHN_ORIGIN", "")).split(",")
+            if item.strip()
+        ]
         self.allow_no_auth = args.allow_no_auth
         self.monitor_script = self.install_dir / "fujifilm_stock_monitor.py"
         self.systemctl_scope = args.systemctl_scope
@@ -172,6 +355,155 @@ class WebApp:
     @property
     def config_dir(self) -> Path:
         return self.config_path.parent
+
+    @property
+    def credentials_path(self) -> Path:
+        return self.config_dir / "webauthn_credentials.json"
+
+    def effective_rp_id(self, host: str) -> str:
+        if self.rp_id:
+            return self.rp_id
+        return host.split(":", 1)[0]
+
+    def effective_origin(self, host: str) -> str:
+        if self.allowed_origins:
+            return self.allowed_origins[0]
+        scheme = "https" if self.secure_cookie else "http"
+        return f"{scheme}://{host}"
+
+    def origin_allowed(self, origin: str, host: str) -> bool:
+        allowed = self.allowed_origins or [self.effective_origin(host)]
+        return origin in allowed
+
+    def credentials(self) -> dict:
+        data = load_json(self.credentials_path)
+        credentials = data.get("credentials", {})
+        return credentials if isinstance(credentials, dict) else {}
+
+    def save_credentials(self, credentials: dict) -> None:
+        write_json(self.credentials_path, {"credentials": credentials})
+
+    def make_challenge_token(self, purpose: str, challenge: str) -> str:
+        payload = {
+            "purpose": purpose,
+            "challenge": challenge,
+            "expires": int(time.time()) + WEBAUTHN_CHALLENGE_SECONDS,
+        }
+        raw = b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        signature = hmac.new(self.session_secret.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).hexdigest()
+        return f"{raw}.{signature}"
+
+    def verify_challenge_token(self, token: str, purpose: str) -> str:
+        try:
+            raw, signature = token.split(".", 1)
+            expected = hmac.new(self.session_secret.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, signature):
+                raise ValueError("Challenge signature mismatch.")
+            payload = json.loads(b64decode(raw).decode("utf-8"))
+            if payload.get("purpose") != purpose or int(payload.get("expires", 0)) < int(time.time()):
+                raise ValueError("Challenge expired.")
+            return str(payload["challenge"])
+        except (ValueError, KeyError, json.JSONDecodeError):
+            raise ValueError("Passkey challenge 已过期，请刷新重试。") from None
+
+    def passkey_register_options(self, host: str) -> dict:
+        challenge = b64encode(secrets.token_bytes(32))
+        credentials = self.credentials()
+        return {
+            "token": self.make_challenge_token("register", challenge),
+            "publicKey": {
+                "challenge": challenge,
+                "rp": {"name": self.rp_name, "id": self.effective_rp_id(host)},
+                "user": {
+                    "id": b64encode(hashlib.sha256((self.effective_rp_id(host) + ":admin").encode()).digest()[:16]),
+                    "name": "admin",
+                    "displayName": "Fujifilm Admin",
+                },
+                "pubKeyCredParams": [{"type": "public-key", "alg": -7}, {"type": "public-key", "alg": -257}],
+                "authenticatorSelection": {"residentKey": "preferred", "userVerification": "required"},
+                "attestation": "none",
+                "timeout": 60000,
+                "excludeCredentials": [{"type": "public-key", "id": credential_id} for credential_id in credentials],
+            },
+        }
+
+    def passkey_login_options(self, host: str) -> dict:
+        challenge = b64encode(secrets.token_bytes(32))
+        credentials = self.credentials()
+        return {
+            "token": self.make_challenge_token("login", challenge),
+            "publicKey": {
+                "challenge": challenge,
+                "rpId": self.effective_rp_id(host),
+                "allowCredentials": [{"type": "public-key", "id": credential_id} for credential_id in credentials],
+                "userVerification": "required",
+                "timeout": 60000,
+            },
+            "hasCredentials": bool(credentials),
+        }
+
+    def verify_registration(self, host: str, payload: dict) -> str:
+        expected_challenge = self.verify_challenge_token(str(payload.get("token", "")), "register")
+        response = payload.get("response", {})
+        client_data = json.loads(b64decode(str(response.get("clientDataJSON", ""))).decode("utf-8"))
+        if client_data.get("type") != "webauthn.create":
+            raise ValueError("Passkey 注册类型无效。")
+        if client_data.get("challenge") != expected_challenge:
+            raise ValueError("Passkey challenge 不匹配。")
+        if not self.origin_allowed(str(client_data.get("origin", "")), host):
+            raise ValueError("Passkey origin 不允许。")
+        attestation = cbor_decode(b64decode(str(response.get("attestationObject", ""))))
+        if not isinstance(attestation, dict) or not isinstance(attestation.get("authData"), bytes):
+            raise ValueError("Passkey attestation 无效。")
+        auth_data = parse_authenticator_data(attestation["authData"])
+        rp_hash = hashlib.sha256(self.effective_rp_id(host).encode("utf-8")).digest()
+        if auth_data["rp_id_hash"] != rp_hash:
+            raise ValueError("Passkey RP ID 不匹配。")
+        if not (auth_data["flags"] & 0x01) or not (auth_data["flags"] & 0x04):
+            raise ValueError("Passkey 需要用户在场和本地验证。")
+        credential_id = b64encode(auth_data["credential_id"])
+        public_key_pem = pem_public_key_from_cose(auth_data["cose_key"])
+        credentials = self.credentials()
+        credentials[credential_id] = {
+            "name": str(payload.get("name") or f"Passkey {len(credentials) + 1}"),
+            "public_key_pem": public_key_pem,
+            "sign_count": int(auth_data["sign_count"]),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self.save_credentials(credentials)
+        return credential_id
+
+    def verify_login(self, host: str, payload: dict) -> str:
+        expected_challenge = self.verify_challenge_token(str(payload.get("token", "")), "login")
+        credential_id = str(payload.get("id", ""))
+        credentials = self.credentials()
+        credential = credentials.get(credential_id)
+        if not isinstance(credential, dict):
+            raise ValueError("Passkey 未注册。")
+        response = payload.get("response", {})
+        client_data_raw = b64decode(str(response.get("clientDataJSON", "")))
+        client_data = json.loads(client_data_raw.decode("utf-8"))
+        if client_data.get("type") != "webauthn.get":
+            raise ValueError("Passkey 登录类型无效。")
+        if client_data.get("challenge") != expected_challenge:
+            raise ValueError("Passkey challenge 不匹配。")
+        if not self.origin_allowed(str(client_data.get("origin", "")), host):
+            raise ValueError("Passkey origin 不允许。")
+        authenticator_data = b64decode(str(response.get("authenticatorData", "")))
+        parsed_auth = parse_authenticator_data(authenticator_data)
+        rp_hash = hashlib.sha256(self.effective_rp_id(host).encode("utf-8")).digest()
+        if parsed_auth["rp_id_hash"] != rp_hash:
+            raise ValueError("Passkey RP ID 不匹配。")
+        if not (parsed_auth["flags"] & 0x01) or not (parsed_auth["flags"] & 0x04):
+            raise ValueError("Passkey 需要用户在场和本地验证。")
+        signature_base = authenticator_data + hashlib.sha256(client_data_raw).digest()
+        signature = b64decode(str(response.get("signature", "")))
+        if not verify_signature_with_openssl(str(credential.get("public_key_pem", "")), signature_base, signature):
+            raise ValueError("Passkey 签名验证失败。")
+        if int(parsed_auth["sign_count"]) > 0:
+            credential["sign_count"] = int(parsed_auth["sign_count"])
+            self.save_credentials(credentials)
+        return credential_id
 
     def config(self) -> dict:
         data = load_json(self.config_path)
@@ -385,6 +717,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_javascript(self, body: str) -> None:
+        encoded = body.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def redirect(self, location: str) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
@@ -398,6 +749,16 @@ class Handler(BaseHTTPRequestHandler):
         values = urllib.parse.parse_qs(raw, keep_blank_values=True)
         return {key: values[key][0] for key in values}
 
+    def read_json(self) -> dict:
+        size = int(self.headers.get("Content-Length", "0") or "0")
+        if size > 32768:
+            raise ValueError("请求太大。")
+        raw = self.rfile.read(size).decode("utf-8", "replace")
+        data = json.loads(raw or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("请求格式无效。")
+        return data
+
     def require_post_token(self, form: dict[str, str]) -> None:
         if self.app.allow_no_auth:
             return
@@ -408,6 +769,12 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/robots.txt":
             self.send_text("User-agent: *\nDisallow: /\n")
+            return
+        if parsed.path == "/app.js":
+            self.send_javascript(self.app_script())
+            return
+        if parsed.path == "/webauthn/login/options":
+            self.send_json(self.app.passkey_login_options(self.headers.get("Host", "")))
             return
         if parsed.path == "/logout":
             self.send_response(HTTPStatus.SEE_OTHER)
@@ -432,6 +799,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            if self.path == "/webauthn/login/verify":
+                payload = self.read_json()
+                self.app.verify_login(self.headers.get("Host", ""), payload)
+                session_cookie = self.app.make_session_cookie()
+                secure = "; Secure" if self.app.secure_cookie else ""
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header(
+                    "Set-Cookie",
+                    f"fujifilm_session={session_cookie}; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict; Path=/{secure}",
+                )
+                self.end_headers()
+                self.wfile.write(b'{"ok":true,"redirect":"/admin"}')
+                return
+            if self.path == "/webauthn/register/options":
+                if not self.is_authenticated():
+                    self.send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                self.send_json(self.app.passkey_register_options(self.headers.get("Host", "")))
+                return
+            if self.path == "/webauthn/register/verify":
+                if not self.is_authenticated():
+                    self.send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                    return
+                credential_id = self.app.verify_registration(self.headers.get("Host", ""), self.read_json())
+                self.send_json({"ok": True, "credential_id": credential_id})
+                return
             form = self.read_form()
             if self.path.startswith("/login"):
                 admin_key = form.get("admin_key", "")
@@ -480,6 +874,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ValueError("未知操作。")
         except ValueError as exc:
+            if self.path.startswith("/webauthn/"):
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
             self.send_html(self.page("操作失败", f"<p class='error'>{html.escape(str(exc))}</p><p><a href='/admin'>返回后台</a></p>"), HTTPStatus.BAD_REQUEST)
 
     def login_page(self, error: str) -> str:
@@ -488,9 +885,16 @@ class Handler(BaseHTTPRequestHandler):
             "登录",
             f"""
             {error_html}
+            <section class="panel">
+              <h2>Passkey 登录</h2>
+              <p class="muted">使用设备上的 Touch ID、Face ID、Windows Hello 或安全密钥登录。</p>
+              <button type="button" id="passkey-login">使用 Passkey 登录</button>
+              <p id="passkey-status" class="small muted"></p>
+            </section>
             <form method="post" action="/login" class="panel">
-              <label>后台通行密钥<input type="password" name="admin_key" autocomplete="current-password" autofocus></label>
-              <button type="submit">登录</button>
+              <h2>备用密钥登录</h2>
+              <label>后台备用密钥<input type="password" name="admin_key" autocomplete="current-password" autofocus></label>
+              <button type="submit">使用备用密钥登录</button>
             </form>
             """,
         )
@@ -571,6 +975,12 @@ class Handler(BaseHTTPRequestHandler):
               <a class="button secondary" href="/logout">退出登录</a>
             </section>
             {summary}
+            <section class="panel">
+              <h2>Passkey</h2>
+              <p class="muted">把当前设备注册为后台 Passkey。注册后，下次可以直接用系统弹窗登录。</p>
+              <button type="button" id="passkey-register">注册此设备</button>
+              <p id="passkey-status" class="small muted"></p>
+            </section>
             <section class="panel">
               <h2>添加监控</h2>
               <form method="post">
@@ -661,8 +1071,100 @@ class Handler(BaseHTTPRequestHandler):
 <body>
   <header><h1>{html.escape(title)}</h1></header>
   <main>{body}</main>
+  <script src="/app.js"></script>
 </body>
 </html>"""
+
+    def app_script(self) -> str:
+        return r"""
+function b64ToBuf(value) {
+  const padded = value + "=".repeat((4 - value.length % 4) % 4);
+  const raw = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bufToB64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let raw = "";
+  for (const byte of bytes) raw += String.fromCharCode(byte);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function setPasskeyStatus(text, isError) {
+  const el = document.getElementById("passkey-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = isError ? "small error" : "small muted";
+}
+
+async function passkeyLogin() {
+  try {
+    if (!window.PublicKeyCredential) throw new Error("当前浏览器不支持 Passkey。");
+    setPasskeyStatus("正在请求 Passkey...", false);
+    const options = await (await fetch("/webauthn/login/options")).json();
+    if (!options.hasCredentials) throw new Error("还没有注册 Passkey，请先用备用密钥登录后台注册。");
+    const publicKey = options.publicKey;
+    publicKey.challenge = b64ToBuf(publicKey.challenge);
+    publicKey.allowCredentials = publicKey.allowCredentials.map((item) => ({...item, id: b64ToBuf(item.id)}));
+    const credential = await navigator.credentials.get({publicKey});
+    const payload = {
+      token: options.token,
+      id: credential.id,
+      response: {
+        authenticatorData: bufToB64(credential.response.authenticatorData),
+        clientDataJSON: bufToB64(credential.response.clientDataJSON),
+        signature: bufToB64(credential.response.signature),
+        userHandle: credential.response.userHandle ? bufToB64(credential.response.userHandle) : ""
+      }
+    };
+    const result = await (await fetch("/webauthn/login/verify", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    })).json();
+    if (!result.ok) throw new Error(result.error || "Passkey 登录失败。");
+    location.href = result.redirect || "/admin";
+  } catch (error) {
+    setPasskeyStatus(error.message || String(error), true);
+  }
+}
+
+async function passkeyRegister() {
+  try {
+    if (!window.PublicKeyCredential) throw new Error("当前浏览器不支持 Passkey。");
+    setPasskeyStatus("正在创建 Passkey...", false);
+    const options = await (await fetch("/webauthn/register/options", {method: "POST"})).json();
+    const publicKey = options.publicKey;
+    publicKey.challenge = b64ToBuf(publicKey.challenge);
+    publicKey.user.id = b64ToBuf(publicKey.user.id);
+    publicKey.excludeCredentials = publicKey.excludeCredentials.map((item) => ({...item, id: b64ToBuf(item.id)}));
+    const credential = await navigator.credentials.create({publicKey});
+    const payload = {
+      token: options.token,
+      id: credential.id,
+      name: navigator.platform || "Passkey",
+      response: {
+        attestationObject: bufToB64(credential.response.attestationObject),
+        clientDataJSON: bufToB64(credential.response.clientDataJSON)
+      }
+    };
+    const result = await (await fetch("/webauthn/register/verify", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    })).json();
+    if (!result.ok) throw new Error(result.error || "Passkey 注册失败。");
+    setPasskeyStatus("Passkey 已注册。下次可以直接用 Passkey 登录。", false);
+  } catch (error) {
+    setPasskeyStatus(error.message || String(error), true);
+  }
+}
+
+document.getElementById("passkey-login")?.addEventListener("click", passkeyLogin);
+document.getElementById("passkey-register")?.addEventListener("click", passkeyRegister);
+"""
 
 
 class Server(ThreadingHTTPServer):
@@ -682,6 +1184,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--admin-key-hash", default="")
     parser.add_argument("--session-secret", default="")
     parser.add_argument("--secure-cookie", action="store_true")
+    parser.add_argument("--rp-id", default="")
+    parser.add_argument("--rp-name", default="")
+    parser.add_argument("--allowed-origin", default="")
     parser.add_argument("--token", default="", help=argparse.SUPPRESS)
     parser.add_argument("--allow-no-auth", action="store_true", help=argparse.SUPPRESS)
     return parser

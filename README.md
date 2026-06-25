@@ -77,20 +77,24 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 http://127.0.0.1:8765
 ```
 
-后台通行密钥在：
+第一次进入后台时，用备用密钥登录：
 
 ```bash
 ~/.config/fujifilm-stock-monitor/admin-key.txt
 ```
 
-查看后台通行密钥：
+查看备用密钥：
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl web-key
 ```
 
+登录后台后，点击“注册此设备”即可创建真正的 WebAuthn Passkey。之后可以使用 Touch ID、Face ID、Windows Hello 或安全密钥登录。
+
 控制台支持：
 
+- 公开只读库存页，无需登录。
+- 后台使用 WebAuthn Passkey 登录；备用密钥只用于首次注册或应急。
 - 查看所有任务最近检查时间、当前有货数量、连续失败次数和本月已推送数量。
 - 粘贴 `https://mall-jp.fujifilm.com/shop/g/...` 商品页，立即添加为监控任务。
 - 粘贴 `https://mall-jp.fujifilm.com/shop/c/...` 分类页，添加分类监控任务。
@@ -102,7 +106,8 @@ http://127.0.0.1:8765
 
 - 不要把 8765 端口直接暴露到公网。
 - 保持默认的 `127.0.0.1` 监听方式，通过 SSH 隧道使用。
-- 不要公开后台通行密钥；配置文件里只保存 `FUJIFILM_ADMIN_KEY_HASH`。
+- 不要公开备用密钥；配置文件里只保存 `FUJIFILM_ADMIN_KEY_HASH`。
+- Passkey credential public key 保存在配置目录的 `webauthn_credentials.json`。
 - Web 控制台只接受 Fujifilm Mall 的商品页和分类页链接。
 
 ## 测试
@@ -177,6 +182,8 @@ systemctl --user status fujifilm-stock-monitor.service
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl web-key
 ssh -L 8765:127.0.0.1:8765 user@your-server
 ```
+
+进入后台后点击“注册此设备”，以后可直接使用 Passkey 登录。
 
 ## 维护工具
 
