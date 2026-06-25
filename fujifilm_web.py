@@ -100,6 +100,7 @@ class WebApp:
         self.token = args.token or os.environ.get("FUJIFILM_WEB_TOKEN", "")
         self.allow_no_auth = args.allow_no_auth
         self.monitor_script = self.install_dir / "fujifilm_stock_monitor.py"
+        self.systemctl_scope = args.systemctl_scope
 
     @property
     def config_dir(self) -> Path:
@@ -183,7 +184,11 @@ class WebApp:
     def systemctl(self, action: str) -> tuple[int, str]:
         if action not in {"start", "stop", "restart"}:
             return 2, "不支持的操作。"
-        return run_command(["systemctl", "--user", action, self.service_name], timeout=30)
+        if self.systemctl_scope == "system":
+            command = ["sudo", "-n", "systemctl", action, self.service_name]
+        else:
+            command = ["systemctl", "--user", action, self.service_name]
+        return run_command(command, timeout=30)
 
     def restart_service(self) -> tuple[int, str]:
         return self.systemctl("restart")
@@ -196,11 +201,19 @@ class WebApp:
         )
 
     def service_status(self) -> str:
-        code, output = run_command(["systemctl", "--user", "is-active", self.service_name], timeout=10)
+        if self.systemctl_scope == "system":
+            command = ["systemctl", "is-active", self.service_name]
+        else:
+            command = ["systemctl", "--user", "is-active", self.service_name]
+        code, output = run_command(command, timeout=10)
         return output if code == 0 else output or "unknown"
 
     def logs(self) -> str:
-        _, output = run_command(["journalctl", "--user", "-u", self.service_name, "-n", "80", "--no-pager"], timeout=20)
+        if self.systemctl_scope == "system":
+            command = ["journalctl", "-u", self.service_name, "-n", "80", "--no-pager"]
+        else:
+            command = ["journalctl", "--user", "-u", self.service_name, "-n", "80", "--no-pager"]
+        _, output = run_command(command, timeout=20)
         return output
 
 
@@ -423,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--install-dir", type=Path, default=Path.home() / ".local" / "share" / APP_NAME)
     parser.add_argument("--service-name", default=DEFAULT_SERVICE)
+    parser.add_argument("--systemctl-scope", choices=("user", "system"), default="user")
     parser.add_argument("--token", default="")
     parser.add_argument("--allow-no-auth", action="store_true", help=argparse.SUPPRESS)
     return parser

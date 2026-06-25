@@ -36,6 +36,7 @@ class WebTests(unittest.TestCase):
                     install_dir=root,
                     token="secret",
                     allow_no_auth=False,
+                    systemctl_scope="user",
                 )
             )
             with mock.patch.object(app, "restart_service", return_value=(0, "")):
