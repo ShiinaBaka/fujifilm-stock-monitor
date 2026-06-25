@@ -24,6 +24,7 @@ https://mall-jp.fujifilm.com/shop/c/c306010/
 - 自带 `fujifilmctl` 维护工具，方便查状态、看日志、测试推送和恢复某款商品。
 - 安装时带交互式向导，可直接生成 `config.json`。
 - 支持一个配置文件定义多个监控任务。
+- 支持本机 Web 控制台查看库存、添加商品链接、暂停/恢复/重启监控。
 
 ## 一键安装
 
@@ -59,7 +60,50 @@ SERVERCHAN_SENDKEY=YOUR_SENDKEY
 
 ```bash
 systemctl --user start fujifilm-stock-monitor.service
+systemctl --user start fujifilm-stock-monitor-web.service
 ```
+
+## Web 控制台
+
+Web 控制台默认只监听服务器本机 `127.0.0.1:8765`，需要通过 SSH 隧道访问：
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@your-server
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+访问 Token 在：
+
+```bash
+~/.config/fujifilm-stock-monitor/env
+```
+
+查看 Token：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-token
+```
+
+控制台支持：
+
+- 查看所有任务最近检查时间、当前有货数量、连续失败次数和本月已推送数量。
+- 粘贴 `https://mall-jp.fujifilm.com/shop/g/...` 商品页，立即添加为监控任务。
+- 粘贴 `https://mall-jp.fujifilm.com/shop/c/...` 分类页，添加分类监控任务。
+- 暂停、恢复、重启服务。
+- 立即运行一次检查。
+- 查看最近日志。
+
+安全建议：
+
+- 不要把 8765 端口直接暴露到公网。
+- 保持默认的 `127.0.0.1` 监听方式，通过 SSH 隧道使用。
+- 不要公开 `FUJIFILM_WEB_TOKEN`。
+- Web 控制台只接受 Fujifilm Mall 的商品页和分类页链接。
 
 ## 测试
 
@@ -126,6 +170,14 @@ systemctl --user status fujifilm-stock-monitor.service
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl resume
 ```
 
+我想打开 Web 控制台：
+
+```bash
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-start
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-token
+ssh -L 8765:127.0.0.1:8765 user@your-server
+```
+
 ## 维护工具
 
 安装脚本会同时安装：
@@ -146,6 +198,9 @@ systemctl --user status fujifilm-stock-monitor.service
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl test-push
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl pause
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl resume
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-status
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-start
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-stop
 ```
 
 如果启用了“每款商品每月最多推送一次”，但某款没抢到，可以只恢复这一款本月再次推送：
@@ -220,6 +275,14 @@ python3 fujifilm_stock_monitor.py --once --print-products --ipv4
 
 ```bash
 python3 fujifilm_stock_monitor.py --name-regex '1パック|モノクローム'
+```
+
+监控单个商品页：
+
+```bash
+python3 fujifilm_stock_monitor.py \
+  --url 'https://mall-jp.fujifilm.com/shop/g/g16587294/' \
+  --require-text ''
 ```
 
 监控其他 Fujifilm 分类：
@@ -306,6 +369,8 @@ python3 -m unittest discover -s tests -v
 - 其他商品继续监控。
 - 推送失败时不写去重标记。
 - 多任务配置一次性检查。
+- 单个商品页解析。
+- Web 控制台 URL 校验和添加任务。
 
 ## 没抢到时恢复
 

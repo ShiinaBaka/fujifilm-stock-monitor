@@ -6,6 +6,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/share/$APP_NAME}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/$APP_NAME}"
 SYSTEMD_USER_DIR="${SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SERVICE_NAME="$APP_NAME.service"
+WEB_SERVICE_NAME="$APP_NAME-web.service"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -21,6 +22,7 @@ need_cmd systemctl
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$SYSTEMD_USER_DIR"
 install -m 0755 "$SCRIPT_DIR/fujifilm_stock_monitor.py" "$INSTALL_DIR/fujifilm_stock_monitor.py"
+install -m 0755 "$SCRIPT_DIR/fujifilm_web.py" "$INSTALL_DIR/fujifilm_web.py"
 install -m 0755 "$SCRIPT_DIR/run.sh" "$INSTALL_DIR/run.sh"
 install -m 0755 "$SCRIPT_DIR/resume.sh" "$INSTALL_DIR/resume.sh"
 install -m 0755 "$SCRIPT_DIR/fujifilmctl.sh" "$INSTALL_DIR/fujifilmctl"
@@ -29,6 +31,32 @@ if [ ! -f "$CONFIG_DIR/env" ]; then
   install -m 0600 "$SCRIPT_DIR/env.example" "$CONFIG_DIR/env"
   echo "已创建配置文件：$CONFIG_DIR/env"
   echo "如果需要 Server 酱、ntfy 或 Webhook 推送，请先编辑这个文件。"
+fi
+
+if ! grep -q '^FUJIFILM_WEB_TOKEN=.' "$CONFIG_DIR/env"; then
+  web_token="$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+  if grep -q '^FUJIFILM_WEB_TOKEN=' "$CONFIG_DIR/env"; then
+    python3 - "$CONFIG_DIR/env" "$web_token" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+token = sys.argv[2]
+lines = path.read_text().splitlines()
+path.write_text("\n".join("FUJIFILM_WEB_TOKEN=" + token if line.startswith("FUJIFILM_WEB_TOKEN=") else line for line in lines) + "\n")
+PY
+  else
+    {
+      echo
+      echo "# Web 控制台访问 Token。请不要公开。"
+      echo "FUJIFILM_WEB_TOKEN=$web_token"
+    } >> "$CONFIG_DIR/env"
+  fi
+  chmod 600 "$CONFIG_DIR/env"
 fi
 
 ask() {
@@ -130,8 +158,15 @@ sed \
   "$SCRIPT_DIR/fujifilm-stock-monitor.service.template" \
   > "$SYSTEMD_USER_DIR/$SERVICE_NAME"
 
+sed \
+  -e "s#__INSTALL_DIR__#$INSTALL_DIR#g" \
+  -e "s#__CONFIG_DIR__#$CONFIG_DIR#g" \
+  "$SCRIPT_DIR/fujifilm-stock-web.service.template" \
+  > "$SYSTEMD_USER_DIR/$WEB_SERVICE_NAME"
+
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME"
+systemctl --user enable "$WEB_SERVICE_NAME"
 
 if command -v loginctl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
   sudo loginctl enable-linger "$USER" >/dev/null 2>&1 || true
@@ -145,6 +180,12 @@ echo "  $INSTALL_DIR/fujifilm_stock_monitor.py --once --print-products --ipv4"
 echo
 echo "启动服务："
 echo "  systemctl --user start $SERVICE_NAME"
+echo "  systemctl --user start $WEB_SERVICE_NAME"
+echo
+echo "打开 Web 控制台："
+echo "  ssh -L 8765:127.0.0.1:8765 user@your-server"
+echo "  http://127.0.0.1:8765"
+echo "  Token 在 $CONFIG_DIR/env 的 FUJIFILM_WEB_TOKEN"
 echo
 echo "查看日志："
 echo "  journalctl --user -u $SERVICE_NAME -f"

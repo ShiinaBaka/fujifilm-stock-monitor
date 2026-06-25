@@ -1,0 +1,17 @@
+[Unit]
+Description=Fujifilm stock monitor web console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+EnvironmentFile=__CONFIG_DIR__/env
+Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Tokyo
+ExecStart=__INSTALL_DIR__/fujifilm_web.py --config __CONFIG_DIR__/config.json --install-dir __INSTALL_DIR__ --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

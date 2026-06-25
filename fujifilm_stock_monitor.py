@@ -150,6 +150,50 @@ def parse_products(page_html: str, base_url: str) -> list[Product]:
     return products
 
 
+def is_product_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.netloc == "mall-jp.fujifilm.com" and parsed.path.startswith("/shop/g/")
+
+
+def parse_single_product(page_html: str, url: str) -> Product:
+    name = ""
+    for pattern in (
+        r'<meta\b[^>]*\bproperty\s*=\s*(["\'])og:title\1[^>]*>',
+        r'<meta\b[^>]*\bname\s*=\s*(["\'])twitter:title\1[^>]*>',
+    ):
+        match = re.search(pattern, page_html, re.I | re.S)
+        if match:
+            name = get_attr(match.group(0), "content")
+            if name:
+                break
+    if not name:
+        title_match = re.search(r"<title\b[^>]*>(.*?)</title>", page_html, re.I | re.S)
+        if title_match:
+            name = strip_tags(title_match.group(1))
+    if not name:
+        heading_match = re.search(r"<h1\b[^>]*>(.*?)</h1>", page_html, re.I | re.S)
+        if heading_match:
+            name = strip_tags(heading_match.group(1))
+    if not name:
+        name = url.rstrip("/").split("/")[-1]
+    name = re.sub(r"\s*\|\s*FUJIFILM.*$", "", name).strip()
+
+    price = ""
+    price_match = re.search(
+        r'<[^>]*\bclass\s*=\s*(["\'])[^"\']*\bprice_\b[^"\']*\1[^>]*>(.*?)</[^>]+>',
+        page_html,
+        re.I | re.S,
+    )
+    if price_match:
+        price = strip_tags(price_match.group(2))
+
+    sold_out = bool(
+        re.search(r'\bclass\s*=\s*(["\'])[^"\']*\bsoldout_\b', page_html, re.I)
+        or re.search(r"在庫なし|品切れ|販売終了|SOLD\s*OUT", strip_tags(page_html), re.I)
+    )
+    return Product(name=name, url=url, price=price, sold_out=sold_out)
+
+
 def load_state(path: Path) -> dict[str, bool]:
     data = load_full_state(path)
     return {str(k): bool(v) for k, v in data.get("stock", {}).items()}
@@ -489,6 +533,8 @@ def run_check(args: argparse.Namespace) -> int:
         raise RuntimeError(f"Required category heading not found: {args.require_text}")
 
     products = parse_products(page_html, args.url)
+    if not products and is_product_url(args.url):
+        products = [parse_single_product(page_html, args.url)]
     if args.name_regex:
         pattern = re.compile(args.name_regex)
         products = [product for product in products if pattern.search(product.name)]

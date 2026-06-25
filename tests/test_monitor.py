@@ -55,6 +55,20 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(len(products), 2)
         self.assertFalse(products[0].in_stock)
 
+    def test_parse_single_product_page(self) -> None:
+        in_stock = monitor.parse_single_product(
+            (FIXTURES / "product_in_stock.html").read_text(),
+            "https://mall-jp.fujifilm.com/shop/g/g16587294/",
+        )
+        self.assertEqual(in_stock.name, "チェキ専用フィルム 1パック")
+        self.assertTrue(in_stock.in_stock)
+
+        sold_out = monitor.parse_single_product(
+            (FIXTURES / "product_soldout.html").read_text(),
+            "https://mall-jp.fujifilm.com/shop/g/g16587295/",
+        )
+        self.assertFalse(sold_out.in_stock)
+
     def test_monthly_marker_suppresses_same_product_only(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

@@ -8,6 +8,7 @@ ENV_FILE="$CONFIG_DIR/env"
 CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config.json}"
 STATE_FILE="${STATE_FILE:-$CONFIG_DIR/state.json}"
 SERVICE_NAME="$APP_NAME.service"
+WEB_SERVICE_NAME="$APP_NAME-web.service"
 
 usage() {
   cat <<'EOF'
@@ -25,6 +26,10 @@ usage() {
   pause             暂停监控服务
   resume            清理状态/标记并恢复监控
   restore ITEM      只恢复某个商品本月再次推送
+  web-status        查看 Web 控制台状态
+  web-start         启动 Web 控制台
+  web-stop          停止 Web 控制台
+  web-token         显示 Web 控制台访问 Token
   health            运行一轮紧凑健康检查
 
 ITEM 可以是完整商品链接，也可以是 g16587294 这样的商品 ID。
@@ -365,6 +370,15 @@ health() {
   return "$failed"
 }
 
+web_token() {
+  load_env
+  if [ -z "${FUJIFILM_WEB_TOKEN:-}" ]; then
+    echo "未配置 FUJIFILM_WEB_TOKEN。"
+    exit 1
+  fi
+  echo "$FUJIFILM_WEB_TOKEN"
+}
+
 case "${1:-}" in
   status) status ;;
   logs) journalctl --user -u "$SERVICE_NAME" -n 120 -f ;;
@@ -377,6 +391,10 @@ case "${1:-}" in
   pause) systemctl --user stop "$SERVICE_NAME" ;;
   resume) "$INSTALL_DIR/resume.sh" ;;
   restore) shift; restore_item "${1:-}" ;;
+  web-status) systemctl --user --no-pager --full status "$WEB_SERVICE_NAME" ;;
+  web-start) systemctl --user start "$WEB_SERVICE_NAME" ;;
+  web-stop) systemctl --user stop "$WEB_SERVICE_NAME" ;;
+  web-token) web_token ;;
   health) health ;;
   -h|--help|help|"") usage ;;
   *) usage; exit 2 ;;
