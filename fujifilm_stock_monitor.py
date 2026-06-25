@@ -638,6 +638,14 @@ def path_from_config(value: str | None, base_dir: Path) -> Path | None:
     return path
 
 
+def config_value(task: dict, defaults: dict, key: str, fallback):
+    if key in task:
+        return task[key]
+    if key in defaults:
+        return defaults[key]
+    return fallback
+
+
 def task_args_from_config(config: dict, task: dict, config_path: Path, cli_args: argparse.Namespace) -> argparse.Namespace:
     if not isinstance(task, dict):
         raise RuntimeError("Each task in config must be an object.")
@@ -657,8 +665,8 @@ def task_args_from_config(config: dict, task: dict, config_path: Path, cli_args:
 
     return argparse.Namespace(
         task_name=name,
-        url=str(task.get("url") or defaults.get("url") or DEFAULT_URL),
-        require_text=str(task.get("require_text") or defaults.get("require_text") or DEFAULT_REQUIRE_TEXT),
+        url=str(config_value(task, defaults, "url", DEFAULT_URL)),
+        require_text=str(config_value(task, defaults, "require_text", DEFAULT_REQUIRE_TEXT)),
         interval=int(task.get("interval", defaults.get("interval", 3600))),
         jitter=int(task.get("jitter", defaults.get("jitter", 600))),
         once=cli_args.once,

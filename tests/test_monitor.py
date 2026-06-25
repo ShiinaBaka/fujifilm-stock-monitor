@@ -139,6 +139,24 @@ class MonitorTests(unittest.TestCase):
             self.assertTrue((tmp / "a.json").exists())
             self.assertTrue((tmp / "b.json").exists())
 
+    def test_config_empty_require_text_is_respected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            config = {
+                "defaults": {"require_text": "チェキ用フィルム"},
+                "tasks": [
+                    {
+                        "name": "product",
+                        "url": "https://mall-jp.fujifilm.com/shop/g/g16587294/",
+                        "require_text": "",
+                        "state_file": "product.json",
+                    }
+                ],
+            }
+            cli = argparse.Namespace(once=True, print_products=False)
+            task = monitor.task_args_from_config(config, config["tasks"][0], tmp / "config.json", cli)
+            self.assertEqual(task.require_text, "")
+
 
 if __name__ == "__main__":
     unittest.main()

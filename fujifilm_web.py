@@ -119,7 +119,7 @@ class WebApp:
         config = self.config()
         defaults = config.get("defaults", {}) if isinstance(config.get("defaults"), dict) else {}
         result = []
-        for task in config.get("tasks", []):
+        for index, task in enumerate(config.get("tasks", [])):
             if not isinstance(task, dict):
                 continue
             name = str(task.get("name") or "未命名")
@@ -134,8 +134,12 @@ class WebApp:
             notified = load_json(marker_file).get("notified", {}) if marker_file else {}
             result.append(
                 {
+                    "index": index,
                     "name": name,
                     "url": str(task.get("url") or ""),
+                    "require_text": str(task.get("require_text", "")),
+                    "interval": task.get("interval", defaults.get("interval", "")),
+                    "jitter": task.get("jitter", defaults.get("jitter", "")),
                     "state_file": str(state_file or ""),
                     "checked_at": state.get("checked_at", ""),
                     "last_failed_at": state.get("last_failed_at", ""),
@@ -149,7 +153,15 @@ class WebApp:
             )
         return result
 
-    def add_url(self, raw_url: str, raw_name: str) -> str:
+    def add_url(
+        self,
+        raw_url: str,
+        raw_name: str,
+        require_text: str | None = None,
+        interval: str | None = None,
+        jitter: str | None = None,
+        policy: str = "monthly",
+    ) -> str:
         url = validate_fujifilm_url(raw_url)
         config = self.config()
         tasks = config.setdefault("tasks", [])
@@ -161,23 +173,62 @@ class WebApp:
         parsed = urllib.parse.urlparse(url)
         if parsed.path.startswith("/shop/g/"):
             default_name = f"商品 {product_id_from_url(url)}"
-            require_text = ""
+            default_require_text = ""
         else:
             default_name = f"分类 {parsed.path.rstrip('/').split('/')[-1]}"
-            require_text = ""
+            default_require_text = ""
         name = raw_name.strip() or default_name
         slug = safe_task_slug(name)
-        tasks.append(
-            {
-                "name": name,
-                "url": url,
-                "require_text": require_text,
-                "state_file": f"state/{slug}.json",
-                "monthly_marker_dir": f"monthly/{slug}",
-                "alert_on_first_run": True,
-            }
-        )
+        task = {
+            "name": name,
+            "url": url,
+            "require_text": default_require_text if require_text is None else require_text.strip(),
+            "state_file": f"state/{slug}.json",
+            "alert_on_first_run": True,
+        }
+        if interval and interval.strip():
+            task["interval"] = max(int(interval), 600)
+        if jitter and jitter.strip():
+            task["jitter"] = max(int(jitter), 0)
+        if policy == "stop":
+            task["stop_marker"] = f"stopped/{slug}.json"
+        elif policy == "none":
+            pass
+        else:
+            task["monthly_marker_dir"] = f"monthly/{slug}"
+        tasks.append(task)
         write_json(self.config_path, config)
+        self.restart_service()
+        return name
+
+    def delete_task(self, raw_index: str) -> str:
+        index = int(raw_index)
+        config = self.config()
+        tasks = config.get("tasks", [])
+        if not isinstance(tasks, list) or index < 0 or index >= len(tasks):
+            raise ValueError("任务不存在。")
+        task = tasks.pop(index)
+        name = task.get("name", f"#{index}") if isinstance(task, dict) else f"#{index}"
+        write_json(self.config_path, config)
+        self.restart_service()
+        return str(name)
+
+    def clear_notified(self, raw_index: str) -> str:
+        index = int(raw_index)
+        config = self.config()
+        tasks = config.get("tasks", [])
+        defaults = config.get("defaults", {}) if isinstance(config.get("defaults"), dict) else {}
+        if not isinstance(tasks, list) or index < 0 or index >= len(tasks) or not isinstance(tasks[index], dict):
+            raise ValueError("任务不存在。")
+        task = tasks[index]
+        name = str(task.get("name") or f"#{index}")
+        marker_dir = resolve_path(task.get("monthly_marker_dir") or defaults.get("monthly_marker_dir"), self.config_dir)
+        if not marker_dir:
+            raise ValueError("这个任务没有启用本月去重。")
+        marker = marker_dir / f"{datetime.now():%Y-%m}.done"
+        if marker.exists():
+            backup = marker.with_suffix(marker.suffix + f".backup-{datetime.now():%Y%m%d-%H%M%S}")
+            marker.replace(backup)
         self.restart_service()
         return name
 
@@ -245,8 +296,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_text(self, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -270,17 +332,23 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("表单已过期，请刷新页面后重试。")
 
     def do_GET(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/robots.txt":
+            self.send_text("User-agent: *\nDisallow: /\n")
+            return
         if self.path.startswith("/login"):
             self.send_html(self.login_page(""))
             return
-        if not self.is_authenticated():
+        if parsed.path in {"/admin", "/logs"} and not self.is_authenticated():
             self.redirect("/login")
             return
-        parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/logs":
-            self.send_html(self.page("日志", f"<pre>{html.escape(self.app.logs())}</pre>"))
+            self.send_html(self.page("日志", f"<pre>{html.escape(self.app.logs())}</pre><p><a href='/admin'>返回后台</a></p>"))
             return
-        self.send_html(self.dashboard())
+        if parsed.path == "/admin":
+            self.send_html(self.dashboard(admin=True))
+            return
+        self.send_html(self.dashboard(admin=False))
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -289,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                 token = form.get("token", "")
                 if self.app.token and hmac.compare_digest(token, self.app.token):
                     self.send_response(HTTPStatus.SEE_OTHER)
-                    self.send_header("Location", "/")
+                    self.send_header("Location", "/admin")
                     self.send_header("Set-Cookie", "fujifilm_token=%s; HttpOnly; SameSite=Strict; Path=/" % token)
                     self.end_headers()
                     return
@@ -301,20 +369,33 @@ class Handler(BaseHTTPRequestHandler):
             self.require_post_token(form)
             action = form.get("action", "")
             if action == "add":
-                name = self.app.add_url(form.get("url", ""), form.get("name", ""))
-                self.redirect("/?msg=" + urllib.parse.quote(f"已添加：{name}"))
+                name = self.app.add_url(
+                    form.get("url", ""),
+                    form.get("name", ""),
+                    form.get("require_text", ""),
+                    form.get("interval", ""),
+                    form.get("jitter", ""),
+                    form.get("policy", "monthly"),
+                )
+                self.redirect("/admin?msg=" + urllib.parse.quote(f"已添加：{name}"))
+            elif action == "delete":
+                name = self.app.delete_task(form.get("index", ""))
+                self.redirect("/admin?msg=" + urllib.parse.quote(f"已删除任务：{name}"))
+            elif action == "clear-notified":
+                name = self.app.clear_notified(form.get("index", ""))
+                self.redirect("/admin?msg=" + urllib.parse.quote(f"已清空本月去重：{name}"))
             elif action in {"start", "stop", "restart"}:
                 code, output = self.app.systemctl(action)
                 msg = f"{action}: {'成功' if code == 0 else '失败'} {output}"
-                self.redirect("/?msg=" + urllib.parse.quote(msg))
+                self.redirect("/admin?msg=" + urllib.parse.quote(msg))
             elif action == "check":
                 code, output = self.app.check_once()
                 title = "检查完成" if code == 0 else "检查失败"
-                self.send_html(self.page(title, f"<pre>{html.escape(output)}</pre><p><a href='/'>返回</a></p>"))
+                self.send_html(self.page(title, f"<pre>{html.escape(output)}</pre><p><a href='/admin'>返回后台</a></p>"))
             else:
                 raise ValueError("未知操作。")
         except ValueError as exc:
-            self.send_html(self.page("操作失败", f"<p class='error'>{html.escape(str(exc))}</p><p><a href='/'>返回</a></p>"), HTTPStatus.BAD_REQUEST)
+            self.send_html(self.page("操作失败", f"<p class='error'>{html.escape(str(exc))}</p><p><a href='/admin'>返回后台</a></p>"), HTTPStatus.BAD_REQUEST)
 
     def login_page(self, error: str) -> str:
         error_html = f"<p class='error'>{html.escape(error)}</p>" if error else ""
@@ -329,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
             """,
         )
 
-    def dashboard(self) -> str:
+    def dashboard(self, admin: bool) -> str:
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         msg = query.get("msg", [""])[0]
         msg_html = f"<p class='ok'>{html.escape(msg)}</p>" if msg else ""
@@ -350,17 +431,31 @@ class Handler(BaseHTTPRequestHandler):
                   <dl>
                     <dt>上次检查</dt><dd>{html.escape(str(task['checked_at'] or '尚无'))}</dd>
                     <dt>商品数量</dt><dd>{task['total']} 个，当前有货 {len(task['in_stock'])} 个</dd>
-                    <dt>本月已推送</dt><dd>{task['notified_count']} 个</dd>
-                    <dt>连续失败</dt><dd>{html.escape(str(task['consecutive_failures']))}</dd>
+                    {f"<dt>本月已推送</dt><dd>{task['notified_count']} 个</dd>" if admin else ""}
+                    {f"<dt>连续失败</dt><dd>{html.escape(str(task['consecutive_failures']))}</dd>" if admin else ""}
+                    {f"<dt>校验文本</dt><dd>{html.escape(str(task['require_text'] or '不校验'))}</dd>" if admin else ""}
+                    {f"<dt>间隔</dt><dd>{html.escape(str(task['interval']))} 秒 + 随机 {html.escape(str(task['jitter']))} 秒</dd>" if admin else ""}
                   </dl>
-                  {error}
+                  {error if admin else ""}
                   <div>当前有货：{stock_html}</div>
+                  {self.task_admin_buttons(task) if admin else ""}
                 </section>
                 """
             )
         token_field = html.escape(self.app.token)
+        if not admin:
+            return self.page(
+                "Fujifilm 库存状态",
+                f"""
+                <section class="panel public-head">
+                  <p>公开库存页只显示当前监控结果；后台管理需要登录。</p>
+                  <a class="button" href="/admin">后台管理</a>
+                </section>
+                {''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}
+                """,
+            )
         return self.page(
-            "Fujifilm 监控控制台",
+            "Fujifilm 后台管理",
             f"""
             {msg_html}
             <section class="panel">
@@ -369,7 +464,17 @@ class Handler(BaseHTTPRequestHandler):
                 <input type="hidden" name="auth_token" value="{token_field}">
                 <input type="hidden" name="action" value="add">
                 <label>商品或分类链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/g/g16587294/" required></label>
-                <label>名称<input name="name" placeholder="可选，例如 mini 白边 1P"></label>
+                <label>名称<input name="name" placeholder="可选，例如 MINI13"></label>
+                <label>分类标题校验<input name="require_text" placeholder="留空表示不校验"></label>
+                <label>检查间隔秒数<input name="interval" inputmode="numeric" placeholder="默认"></label>
+                <label>随机延迟秒数<input name="jitter" inputmode="numeric" placeholder="默认"></label>
+                <label>推送策略
+                  <select name="policy">
+                    <option value="monthly">每款每月最多一次</option>
+                    <option value="stop">首次补货后停止任务</option>
+                    <option value="none">不做去重/停止</option>
+                  </select>
+                </label>
                 <button type="submit">开始监控</button>
               </form>
             </section>
@@ -383,11 +488,24 @@ class Handler(BaseHTTPRequestHandler):
                 <button name="action" value="stop">暂停</button>
                 <button name="action" value="start">恢复</button>
                 <a class="button" href="/logs">查看日志</a>
+                <a class="button secondary" href="/">公开页</a>
               </form>
             </section>
             {''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}
             """,
         )
+
+    def task_admin_buttons(self, task: dict) -> str:
+        token_field = html.escape(self.app.token)
+        index = html.escape(str(task["index"]))
+        return f"""
+        <form method="post" class="inline-actions">
+          <input type="hidden" name="auth_token" value="{token_field}">
+          <input type="hidden" name="index" value="{index}">
+          <button name="action" value="clear-notified">清空本月去重</button>
+          <button name="action" value="delete" class="danger">删除任务</button>
+        </form>
+        """
 
     def page(self, title: str, body: str) -> str:
         return f"""<!doctype html>
@@ -405,9 +523,12 @@ class Handler(BaseHTTPRequestHandler):
     .card-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
     form {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }}
     label {{ display: grid; gap: 6px; flex: 1 1 260px; font-size: 14px; color: #374151; }}
-    input {{ border: 1px solid #b8c0cc; border-radius: 6px; padding: 10px 12px; font-size: 15px; }}
+    input, select {{ border: 1px solid #b8c0cc; border-radius: 6px; padding: 10px 12px; font-size: 15px; background: white; }}
     button, .button {{ border: 0; border-radius: 6px; background: #1f6feb; color: white; padding: 10px 14px; font-size: 14px; text-decoration: none; cursor: pointer; }}
     button[value="stop"] {{ background: #b42318; }} button[value="restart"] {{ background: #875bf7; }}
+    .secondary {{ background: #4b5563; }} .danger, button[value="delete"] {{ background: #b42318; }}
+    .inline-actions {{ margin-top: 12px; }}
+    .public-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
     a {{ color: #0969da; word-break: break-all; }} dl {{ display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; }}
     dt {{ color: #5f6b7a; }} dd {{ margin: 0; }}
     pre {{ white-space: pre-wrap; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 14px; overflow: auto; }}
