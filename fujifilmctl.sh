@@ -29,7 +29,7 @@ usage() {
   web-status        查看 Web 控制台状态
   web-start         启动 Web 控制台
   web-stop          停止 Web 控制台
-  web-token         显示 Web 控制台访问 Token
+  web-key           显示 Web 后台通行密钥
   health            运行一轮紧凑健康检查
 
 ITEM 可以是完整商品链接，也可以是 g16587294 这样的商品 ID。
@@ -370,13 +370,13 @@ health() {
   return "$failed"
 }
 
-web_token() {
-  load_env
-  if [ -z "${FUJIFILM_WEB_TOKEN:-}" ]; then
-    echo "未配置 FUJIFILM_WEB_TOKEN。"
+web_key() {
+  local key_file="$CONFIG_DIR/admin-key.txt"
+  if [ ! -f "$key_file" ]; then
+    echo "未找到 $key_file。若已改为只保存哈希，请重置后台通行密钥。" >&2
     exit 1
   fi
-  echo "$FUJIFILM_WEB_TOKEN"
+  cat "$key_file"
 }
 
 case "${1:-}" in
@@ -394,7 +394,7 @@ case "${1:-}" in
   web-status) systemctl --user --no-pager --full status "$WEB_SERVICE_NAME" ;;
   web-start) systemctl --user start "$WEB_SERVICE_NAME" ;;
   web-stop) systemctl --user stop "$WEB_SERVICE_NAME" ;;
-  web-token) web_token ;;
+  web-key) web_key ;;
   health) health ;;
   -h|--help|help|"") usage ;;
   *) usage; exit 2 ;;

@@ -33,30 +33,48 @@ if [ ! -f "$CONFIG_DIR/env" ]; then
   echo "如果需要 Server 酱、ntfy 或 Webhook 推送，请先编辑这个文件。"
 fi
 
-if ! grep -q '^FUJIFILM_WEB_TOKEN=.' "$CONFIG_DIR/env"; then
-  web_token="$(python3 - <<'PY'
+if ! grep -q '^FUJIFILM_ADMIN_KEY_HASH=.' "$CONFIG_DIR/env"; then
+  python3 - "$CONFIG_DIR/env" "$CONFIG_DIR/admin-key.txt" <<'PY'
+import base64
+import hashlib
 import secrets
-print(secrets.token_urlsafe(32))
-PY
-)"
-  if grep -q '^FUJIFILM_WEB_TOKEN=' "$CONFIG_DIR/env"; then
-    python3 - "$CONFIG_DIR/env" "$web_token" <<'PY'
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-token = sys.argv[2]
-lines = path.read_text().splitlines()
-path.write_text("\n".join("FUJIFILM_WEB_TOKEN=" + token if line.startswith("FUJIFILM_WEB_TOKEN=") else line for line in lines) + "\n")
+env_path = Path(sys.argv[1])
+key_path = Path(sys.argv[2])
+admin_key = secrets.token_urlsafe(24)
+session_secret = secrets.token_urlsafe(32)
+salt = secrets.token_bytes(16)
+iterations = 260000
+digest = hashlib.pbkdf2_hmac("sha256", admin_key.encode(), salt, iterations)
+
+def b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+admin_hash = f"pbkdf2_sha256${iterations}${b64(salt)}${b64(digest)}"
+lines = env_path.read_text().splitlines()
+seen_hash = False
+seen_session = False
+out = []
+for line in lines:
+    if line.startswith("FUJIFILM_ADMIN_KEY_HASH="):
+        out.append("FUJIFILM_ADMIN_KEY_HASH=" + admin_hash)
+        seen_hash = True
+    elif line.startswith("FUJIFILM_SESSION_SECRET="):
+        out.append("FUJIFILM_SESSION_SECRET=" + session_secret)
+        seen_session = True
+    else:
+        out.append(line)
+if not seen_hash:
+    out.extend(["", "# Web 后台通行密钥哈希。请不要手动改成明文。", "FUJIFILM_ADMIN_KEY_HASH=" + admin_hash])
+if not seen_session:
+    out.append("FUJIFILM_SESSION_SECRET=" + session_secret)
+env_path.write_text("\n".join(out) + "\n")
+key_path.write_text(admin_key + "\n")
 PY
-  else
-    {
-      echo
-      echo "# Web 控制台访问 Token。请不要公开。"
-      echo "FUJIFILM_WEB_TOKEN=$web_token"
-    } >> "$CONFIG_DIR/env"
-  fi
   chmod 600 "$CONFIG_DIR/env"
+  chmod 600 "$CONFIG_DIR/admin-key.txt"
 fi
 
 ask() {
@@ -185,7 +203,7 @@ echo
 echo "打开 Web 控制台："
 echo "  ssh -L 8765:127.0.0.1:8765 user@your-server"
 echo "  http://127.0.0.1:8765"
-echo "  Token 在 $CONFIG_DIR/env 的 FUJIFILM_WEB_TOKEN"
+echo "  后台通行密钥在 $CONFIG_DIR/admin-key.txt"
 echo
 echo "查看日志："
 echo "  journalctl --user -u $SERVICE_NAME -f"

@@ -34,7 +34,10 @@ class WebTests(unittest.TestCase):
                     config=config,
                     service_name="fujifilm-stock-monitor.service",
                     install_dir=root,
-                    token="secret",
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
                     allow_no_auth=False,
                     systemctl_scope="user",
                 )
@@ -57,7 +60,10 @@ class WebTests(unittest.TestCase):
                     config=config,
                     service_name="fujifilm-stock-monitor.service",
                     install_dir=root,
-                    token="secret",
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
                     allow_no_auth=False,
                     systemctl_scope="user",
                 )
@@ -77,6 +83,30 @@ class WebTests(unittest.TestCase):
             self.assertEqual(task["require_text"], "")
             self.assertIn("stop_marker", task)
             self.assertNotIn("monthly_marker_dir", task)
+
+    def test_admin_key_hash_verification(self) -> None:
+        encoded = web.make_admin_key_hash("open sesame")
+        self.assertTrue(web.verify_admin_key_hash("open sesame", encoded))
+        self.assertFalse(web.verify_admin_key_hash("wrong", encoded))
+
+    def test_session_cookie_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app = web.WebApp(
+                argparse.Namespace(
+                    config=Path(td) / "config.json",
+                    service_name="fujifilm-stock-monitor.service",
+                    install_dir=Path(td),
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
+                    allow_no_auth=False,
+                    systemctl_scope="user",
+                )
+            )
+            cookie = app.make_session_cookie()
+            self.assertTrue(app.verify_session_cookie(cookie))
+            self.assertFalse(app.verify_session_cookie(cookie + "x"))
 
 
 if __name__ == "__main__":

@@ -77,16 +77,16 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 http://127.0.0.1:8765
 ```
 
-访问 Token 在：
+后台通行密钥在：
 
 ```bash
-~/.config/fujifilm-stock-monitor/env
+~/.config/fujifilm-stock-monitor/admin-key.txt
 ```
 
-查看 Token：
+查看后台通行密钥：
 
 ```bash
-~/.local/share/fujifilm-stock-monitor/fujifilmctl web-token
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-key
 ```
 
 控制台支持：
@@ -102,7 +102,7 @@ http://127.0.0.1:8765
 
 - 不要把 8765 端口直接暴露到公网。
 - 保持默认的 `127.0.0.1` 监听方式，通过 SSH 隧道使用。
-- 不要公开 `FUJIFILM_WEB_TOKEN`。
+- 不要公开后台通行密钥；配置文件里只保存 `FUJIFILM_ADMIN_KEY_HASH`。
 - Web 控制台只接受 Fujifilm Mall 的商品页和分类页链接。
 
 ## 测试
@@ -174,7 +174,7 @@ systemctl --user status fujifilm-stock-monitor.service
 
 ```bash
 ~/.local/share/fujifilm-stock-monitor/fujifilmctl web-start
-~/.local/share/fujifilm-stock-monitor/fujifilmctl web-token
+~/.local/share/fujifilm-stock-monitor/fujifilmctl web-key
 ssh -L 8765:127.0.0.1:8765 user@your-server
 ```
 

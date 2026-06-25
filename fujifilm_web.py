@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import html
 import hmac
 import json
@@ -12,6 +14,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 import urllib.parse
 from datetime import datetime
 from http import HTTPStatus
@@ -24,6 +27,8 @@ APP_NAME = "fujifilm-stock-monitor"
 DEFAULT_CONFIG = Path.home() / ".config" / APP_NAME / "config.json"
 DEFAULT_SERVICE = f"{APP_NAME}.service"
 FUJIFILM_HOST = "mall-jp.fujifilm.com"
+SESSION_SECONDS = 12 * 60 * 60
+PBKDF2_ITERATIONS = 260000
 
 
 def safe_task_slug(text: str) -> str:
@@ -92,15 +97,77 @@ def run_command(args: list[str], timeout: int = 20) -> tuple[int, str]:
     return completed.returncode, completed.stdout.strip()
 
 
+def b64encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def b64decode(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def make_admin_key_hash(admin_key: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", admin_key.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${b64encode(salt)}${b64encode(digest)}"
+
+
+def verify_admin_key_hash(admin_key: str, encoded_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, digest = encoded_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        expected = hashlib.pbkdf2_hmac("sha256", admin_key.encode("utf-8"), b64decode(salt), int(iterations))
+        return hmac.compare_digest(b64encode(expected), digest)
+    except (ValueError, TypeError):
+        return False
+
+
 class WebApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.config_path = args.config.expanduser()
         self.service_name = args.service_name
         self.install_dir = args.install_dir.expanduser()
-        self.token = args.token or os.environ.get("FUJIFILM_WEB_TOKEN", "")
+        self.admin_key_hash = args.admin_key_hash or os.environ.get("FUJIFILM_ADMIN_KEY_HASH", "")
+        self.legacy_token = args.token or os.environ.get("FUJIFILM_WEB_TOKEN", "")
+        self.session_secret = (
+            args.session_secret
+            or os.environ.get("FUJIFILM_SESSION_SECRET")
+            or self.legacy_token
+            or self.admin_key_hash
+        )
+        self.secure_cookie = args.secure_cookie or os.environ.get("FUJIFILM_COOKIE_SECURE") == "1"
         self.allow_no_auth = args.allow_no_auth
         self.monitor_script = self.install_dir / "fujifilm_stock_monitor.py"
         self.systemctl_scope = args.systemctl_scope
+
+    def has_login_secret(self) -> bool:
+        return bool(self.admin_key_hash or self.legacy_token)
+
+    def verify_admin_key(self, admin_key: str) -> bool:
+        if self.admin_key_hash:
+            return verify_admin_key_hash(admin_key, self.admin_key_hash)
+        return bool(self.legacy_token and hmac.compare_digest(admin_key, self.legacy_token))
+
+    def make_session_cookie(self) -> str:
+        expires = str(int(time.time()) + SESSION_SECONDS)
+        nonce = secrets.token_urlsafe(18)
+        payload = f"{expires}.{nonce}"
+        signature = hmac.new(self.session_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return f"{payload}.{signature}"
+
+    def verify_session_cookie(self, cookie_value: str) -> bool:
+        try:
+            expires_text, nonce, signature = cookie_value.split(".", 2)
+            payload = f"{expires_text}.{nonce}"
+            if int(expires_text) < int(time.time()):
+                return False
+        except (ValueError, TypeError):
+            return False
+        expected = hmac.new(self.session_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    def csrf_token(self, session_cookie: str) -> str:
+        return hmac.new(self.session_secret.encode("utf-8"), session_cookie.encode("utf-8"), hashlib.sha256).hexdigest()
 
     @property
     def config_dir(self) -> Path:
@@ -281,14 +348,20 @@ class Handler(BaseHTTPRequestHandler):
     def is_authenticated(self) -> bool:
         if self.app.allow_no_auth:
             return True
-        if not self.app.token:
+        if not self.app.has_login_secret():
             return False
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], self.app.token):
-            return True
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
-        value = cookie.get("fujifilm_token")
-        return bool(value and hmac.compare_digest(value.value, self.app.token))
+        value = cookie.get("fujifilm_session")
+        return bool(value and self.app.verify_session_cookie(value.value))
+
+    def session_cookie_value(self) -> str:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        value = cookie.get("fujifilm_session")
+        return value.value if value else ""
+
+    def csrf_token(self) -> str:
+        session_cookie = self.session_cookie_value()
+        return self.app.csrf_token(session_cookie) if session_cookie else ""
 
     def send_html(self, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = body.encode("utf-8")
@@ -328,13 +401,20 @@ class Handler(BaseHTTPRequestHandler):
     def require_post_token(self, form: dict[str, str]) -> None:
         if self.app.allow_no_auth:
             return
-        if not hmac.compare_digest(form.get("auth_token", ""), self.app.token):
+        if not hmac.compare_digest(form.get("auth_token", ""), self.csrf_token()):
             raise ValueError("表单已过期，请刷新页面后重试。")
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/robots.txt":
             self.send_text("User-agent: *\nDisallow: /\n")
+            return
+        if parsed.path == "/logout":
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/")
+            secure = "; Secure" if self.app.secure_cookie else ""
+            self.send_header("Set-Cookie", f"fujifilm_session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/{secure}")
+            self.end_headers()
             return
         if self.path.startswith("/login"):
             self.send_html(self.login_page(""))
@@ -354,14 +434,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             form = self.read_form()
             if self.path.startswith("/login"):
-                token = form.get("token", "")
-                if self.app.token and hmac.compare_digest(token, self.app.token):
+                admin_key = form.get("admin_key", "")
+                if self.app.verify_admin_key(admin_key):
+                    session_cookie = self.app.make_session_cookie()
+                    secure = "; Secure" if self.app.secure_cookie else ""
                     self.send_response(HTTPStatus.SEE_OTHER)
                     self.send_header("Location", "/admin")
-                    self.send_header("Set-Cookie", "fujifilm_token=%s; HttpOnly; SameSite=Strict; Path=/" % token)
+                    self.send_header(
+                        "Set-Cookie",
+                        f"fujifilm_session={session_cookie}; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict; Path=/{secure}",
+                    )
                     self.end_headers()
                     return
-                self.send_html(self.login_page("Token 不正确。"), HTTPStatus.UNAUTHORIZED)
+                self.send_html(self.login_page("通行密钥不正确。"), HTTPStatus.UNAUTHORIZED)
                 return
             if not self.is_authenticated():
                 self.redirect("/login")
@@ -404,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
             f"""
             {error_html}
             <form method="post" action="/login" class="panel">
-              <label>访问 Token<input type="password" name="token" autofocus></label>
+              <label>后台通行密钥<input type="password" name="admin_key" autocomplete="current-password" autofocus></label>
               <button type="submit">登录</button>
             </form>
             """,
@@ -414,8 +499,22 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         msg = query.get("msg", [""])[0]
         msg_html = f"<p class='ok'>{html.escape(msg)}</p>" if msg else ""
+        tasks = self.app.tasks()
+        total_products = sum(int(task["total"]) for task in tasks)
+        total_in_stock = sum(len(task["in_stock"]) for task in tasks)
+        last_checks = [str(task["checked_at"]) for task in tasks if task["checked_at"]]
+        latest_check = max(last_checks) if last_checks else "尚无"
+        summary = f"""
+        <section class="summary">
+          <div><span>任务</span><strong>{len(tasks)}</strong></div>
+          <div><span>商品</span><strong>{total_products}</strong></div>
+          <div><span>有货</span><strong>{total_in_stock}</strong></div>
+          <div><span>最近检查</span><strong>{html.escape(latest_check)}</strong></div>
+          {f"<div><span>服务</span><strong>{html.escape(self.app.service_status())}</strong></div>" if admin else ""}
+        </section>
+        """
         rows = []
-        for task in self.app.tasks():
+        for task in tasks:
             stock_links = "".join(f"<li><a href='{html.escape(url)}'>{html.escape(url)}</a></li>" for url in task["in_stock"])
             stock_html = f"<ul>{stock_links}</ul>" if stock_links else "<span class='muted'>暂无</span>"
             paused = "<span class='badge warn'>已暂停</span>" if task["paused"] else "<span class='badge okb'>运行中</span>"
@@ -442,26 +541,40 @@ class Handler(BaseHTTPRequestHandler):
                 </section>
                 """
             )
-        token_field = html.escape(self.app.token)
+        csrf_field = html.escape(self.csrf_token())
         if not admin:
             return self.page(
                 "Fujifilm 库存状态",
                 f"""
-                <section class="panel public-head">
-                  <p>公开库存页只显示当前监控结果；后台管理需要登录。</p>
+                <section class="hero">
+                  <div>
+                    <p class="eyebrow">Public Stock Board</p>
+                    <h2>Fujifilm Mall 库存状态</h2>
+                    <p>这里公开显示当前监控结果，不开放后台操作。</p>
+                  </div>
                   <a class="button" href="/admin">后台管理</a>
                 </section>
-                {''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}
+                {summary}
+                <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
                 """,
             )
         return self.page(
             "Fujifilm 后台管理",
             f"""
             {msg_html}
+            <section class="hero">
+              <div>
+                <p class="eyebrow">Admin Console</p>
+                <h2>后台管理</h2>
+                <p>添加监控、调整任务、查看日志和控制服务。</p>
+              </div>
+              <a class="button secondary" href="/logout">退出登录</a>
+            </section>
+            {summary}
             <section class="panel">
               <h2>添加监控</h2>
               <form method="post">
-                <input type="hidden" name="auth_token" value="{token_field}">
+                <input type="hidden" name="auth_token" value="{csrf_field}">
                 <input type="hidden" name="action" value="add">
                 <label>商品或分类链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/g/g16587294/" required></label>
                 <label>名称<input name="name" placeholder="可选，例如 MINI13"></label>
@@ -482,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
               <h2>服务控制</h2>
               <p>服务状态：<strong>{html.escape(self.app.service_status())}</strong></p>
               <form method="post">
-                <input type="hidden" name="auth_token" value="{token_field}">
+                <input type="hidden" name="auth_token" value="{csrf_field}">
                 <button name="action" value="check">立即检查</button>
                 <button name="action" value="restart">重启</button>
                 <button name="action" value="stop">暂停</button>
@@ -491,16 +604,16 @@ class Handler(BaseHTTPRequestHandler):
                 <a class="button secondary" href="/">公开页</a>
               </form>
             </section>
-            {''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}
+            <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}</section>
             """,
         )
 
     def task_admin_buttons(self, task: dict) -> str:
-        token_field = html.escape(self.app.token)
+        csrf_field = html.escape(self.csrf_token())
         index = html.escape(str(task["index"]))
         return f"""
         <form method="post" class="inline-actions">
-          <input type="hidden" name="auth_token" value="{token_field}">
+          <input type="hidden" name="auth_token" value="{csrf_field}">
           <input type="hidden" name="index" value="{index}">
           <button name="action" value="clear-notified">清空本月去重</button>
           <button name="action" value="delete" class="danger">删除任务</button>
@@ -520,6 +633,14 @@ class Handler(BaseHTTPRequestHandler):
     main {{ max-width: 1040px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }}
     h1 {{ margin: 0; font-size: 24px; }} h2 {{ margin: 0 0 12px; font-size: 18px; }}
     .panel, .card {{ background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 16px; }}
+    .hero {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: #17202a; color: white; border-radius: 8px; padding: 18px; }}
+    .hero h2 {{ margin: 2px 0 6px; font-size: 22px; }} .hero p {{ margin: 0; color: #d7dde8; }}
+    .eyebrow {{ font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #9fb4d8 !important; }}
+    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
+    .summary div {{ background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; }}
+    .summary span {{ display: block; color: #667085; font-size: 13px; margin-bottom: 6px; }}
+    .summary strong {{ display: block; font-size: 20px; overflow-wrap: anywhere; }}
+    .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }}
     .card-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
     form {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }}
     label {{ display: grid; gap: 6px; flex: 1 1 260px; font-size: 14px; color: #374151; }}
@@ -558,7 +679,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--install-dir", type=Path, default=Path.home() / ".local" / "share" / APP_NAME)
     parser.add_argument("--service-name", default=DEFAULT_SERVICE)
     parser.add_argument("--systemctl-scope", choices=("user", "system"), default="user")
-    parser.add_argument("--token", default="")
+    parser.add_argument("--admin-key-hash", default="")
+    parser.add_argument("--session-secret", default="")
+    parser.add_argument("--secure-cookie", action="store_true")
+    parser.add_argument("--token", default="", help=argparse.SUPPRESS)
     parser.add_argument("--allow-no-auth", action="store_true", help=argparse.SUPPRESS)
     return parser
 
@@ -566,8 +690,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     app = WebApp(args)
-    if not app.token and not app.allow_no_auth:
-        print("FUJIFILM_WEB_TOKEN is required.", file=sys.stderr)
+    if not app.has_login_secret() and not app.allow_no_auth:
+        print("FUJIFILM_ADMIN_KEY_HASH is required.", file=sys.stderr)
         return 2
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         print("Warning: exposing this console beyond localhost is not recommended.", file=sys.stderr)
