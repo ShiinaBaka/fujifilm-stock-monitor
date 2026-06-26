@@ -90,6 +90,66 @@ class WebTests(unittest.TestCase):
             self.assertIn("stop_marker", task)
             self.assertNotIn("monthly_marker_dir", task)
 
+    def test_update_notifications_writes_and_clears_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = root / "config.json"
+            config.write_text(json.dumps({"notifications": {"serverchan_sendkey": "old"}, "tasks": []}))
+            app = web.WebApp(
+                argparse.Namespace(
+                    config=config,
+                    service_name="fujifilm-stock-monitor.service",
+                    install_dir=root,
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
+                    allow_no_auth=False,
+                    systemctl_scope="user",
+                )
+            )
+            with mock.patch.object(app, "restart_service", return_value=(0, "")):
+                app.update_notifications(
+                    {
+                        "serverchan_sendkey": "SCT123",
+                        "ntfy_topic": "fujifilm-topic",
+                        "webhook_url": "https://example.com/hook",
+                    }
+                )
+                settings = app.notification_settings()
+                self.assertEqual(settings["serverchan_sendkey"], "SCT123")
+                self.assertEqual(settings["ntfy_topic"], "fujifilm-topic")
+                self.assertEqual(settings["webhook_url"], "https://example.com/hook")
+
+                app.update_notifications({"serverchan_sendkey": "", "ntfy_topic": "", "webhook_url": ""})
+                data = json.loads(config.read_text())
+                self.assertEqual(data["notifications"], {})
+
+    def test_update_notifications_rejects_invalid_webhook(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            app = web.WebApp(
+                argparse.Namespace(
+                    config=root / "config.json",
+                    service_name="fujifilm-stock-monitor.service",
+                    install_dir=root,
+                    token="",
+                    admin_key_hash=web.make_admin_key_hash("secret"),
+                    session_secret="session-secret",
+                    secure_cookie=False,
+                    rp_id="",
+                    rp_name="",
+                    allowed_origin="",
+                    allow_no_auth=False,
+                    systemctl_scope="user",
+                )
+            )
+            with self.assertRaises(ValueError):
+                app.update_notifications({"serverchan_sendkey": "", "ntfy_topic": "", "webhook_url": "not-a-url"})
+
     def test_admin_key_hash_verification(self) -> None:
         encoded = web.make_admin_key_hash("open sesame")
         self.assertTrue(web.verify_admin_key_hash("open sesame", encoded))

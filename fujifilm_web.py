@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -616,6 +617,102 @@ class WebApp:
         self.restart_service()
         return name
 
+    def notification_settings(self) -> dict[str, str]:
+        notifications = self.config().get("notifications", {})
+        if not isinstance(notifications, dict):
+            notifications = {}
+        return {
+            "serverchan_sendkey": str(notifications.get("serverchan_sendkey") or ""),
+            "ntfy_topic": str(notifications.get("ntfy_topic") or ""),
+            "webhook_url": str(notifications.get("webhook_url") or ""),
+        }
+
+    def update_notifications(self, form: dict[str, str]) -> str:
+        config = self.config()
+        notifications = config.setdefault("notifications", {})
+        if not isinstance(notifications, dict):
+            notifications = {}
+            config["notifications"] = notifications
+        values = {
+            "serverchan_sendkey": form.get("serverchan_sendkey", "").strip(),
+            "ntfy_topic": form.get("ntfy_topic", "").strip(),
+            "webhook_url": form.get("webhook_url", "").strip(),
+        }
+        if values["webhook_url"]:
+            parsed = urllib.parse.urlparse(values["webhook_url"])
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("Webhook URL 必须是 http 或 https 链接。")
+        for key, value in values.items():
+            if value:
+                notifications[key] = value
+            else:
+                notifications.pop(key, None)
+        write_json(self.config_path, config)
+        self.restart_service()
+        enabled = sum(1 for value in values.values() if value)
+        return f"推送设置已保存，已启用 {enabled} 个渠道。"
+
+    def test_notifications(self) -> str:
+        settings = self.notification_settings()
+        title = "Fujifilm 推送测试"
+        message = f"后台推送测试成功。\n\n时间：{datetime.now().isoformat(timespec='seconds')}"
+        first_url = "https://mall-jp.fujifilm.com/"
+        results = []
+        if settings["serverchan_sendkey"]:
+            try:
+                self.send_serverchan(settings["serverchan_sendkey"], title, message, first_url)
+                results.append("Server 酱：成功")
+            except Exception as exc:  # noqa: BLE001
+                results.append(f"Server 酱：失败 {exc}")
+        if settings["ntfy_topic"]:
+            try:
+                self.send_ntfy(settings["ntfy_topic"], title, message, first_url)
+                results.append("ntfy：成功")
+            except Exception as exc:  # noqa: BLE001
+                results.append(f"ntfy：失败 {exc}")
+        if settings["webhook_url"]:
+            try:
+                self.send_webhook(settings["webhook_url"], title, message)
+                results.append("Webhook：成功")
+            except Exception as exc:  # noqa: BLE001
+                results.append(f"Webhook：失败 {exc}")
+        if not results:
+            raise ValueError("还没有配置推送渠道。")
+        return "；".join(results)
+
+    def send_serverchan(self, sendkey: str, title: str, message: str, first_url: str) -> None:
+        body = urllib.parse.urlencode({"title": title, "desp": message + "\n\n" + first_url}).encode("utf-8")
+        request = urllib.request.Request(
+            f"https://sctapi.ftqq.com/{sendkey}.send",
+            data=body,
+            headers={"User-Agent": "FujifilmStockWeb/1.0", "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+
+    def send_ntfy(self, topic_or_url: str, title: str, message: str, first_url: str) -> None:
+        url = topic_or_url if topic_or_url.startswith(("http://", "https://")) else "https://ntfy.sh/" + topic_or_url.strip("/")
+        request = urllib.request.Request(
+            url,
+            data=(message + "\n" + first_url).encode("utf-8"),
+            headers={"User-Agent": "FujifilmStockWeb/1.0", "Title": title, "Tags": "shopping_cart", "Click": first_url},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+
+    def send_webhook(self, webhook_url: str, title: str, message: str) -> None:
+        payload = json.dumps({"title": title, "message": message}, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"User-Agent": "FujifilmStockWeb/1.0", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15):
+            pass
+
     def delete_task(self, raw_index: str) -> str:
         index = int(raw_index)
         config = self.config()
@@ -873,6 +970,12 @@ class Handler(BaseHTTPRequestHandler):
                     form.get("policy", "monthly"),
                 )
                 self.redirect("/admin?msg=" + urllib.parse.quote(f"已添加：{name}"))
+            elif action == "save-notifications":
+                msg = self.app.update_notifications(form)
+                self.redirect("/admin?msg=" + urllib.parse.quote(msg))
+            elif action == "test-notifications":
+                msg = self.app.test_notifications()
+                self.redirect("/admin?msg=" + urllib.parse.quote(msg))
             elif action == "delete":
                 name = self.app.delete_task(form.get("index", ""))
                 self.redirect("/admin?msg=" + urllib.parse.quote(f"已删除任务：{name}"))
@@ -1024,6 +1127,13 @@ class Handler(BaseHTTPRequestHandler):
                 <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
                 """,
             )
+        notifications = self.app.notification_settings()
+        notification_count = sum(1 for value in notifications.values() if value)
+        notification_badge = (
+            f"<span class='badge okb'>{notification_count} 个已启用</span>"
+            if notification_count
+            else "<span class='badge warn'>未配置</span>"
+        )
         return self.page(
             "Fujifilm 后台管理",
             f"""
@@ -1081,6 +1191,27 @@ class Handler(BaseHTTPRequestHandler):
                   </select>
                 </label>
                 <button type="submit" class="wide-button">开始监控</button>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="section-head">
+                <div>
+                  <h2>推送服务</h2>
+                  <p class="muted">补货、失败报警和测试推送都会使用这里的渠道。</p>
+                </div>
+                {notification_badge}
+              </div>
+              <form method="post" class="settings-form">
+                <input type="hidden" name="auth_token" value="{csrf_field}">
+                <input type="hidden" name="action" value="save-notifications">
+                <label>Server 酱 SendKey<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SCT..."></label>
+                <label>ntfy 主题或 URL<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="例如 fujifilm-stock 或 https://ntfy.sh/..."></label>
+                <label>Webhook URL<input name="webhook_url" value="{html.escape(notifications['webhook_url'])}" placeholder="https://example.com/webhook"></label>
+                <button type="submit" class="wide-button">保存推送设置</button>
+              </form>
+              <form method="post" class="inline-actions">
+                <input type="hidden" name="auth_token" value="{csrf_field}">
+                <button name="action" value="test-notifications" class="secondary wide-button">发送测试推送</button>
               </form>
             </section>
             <section class="panel">
