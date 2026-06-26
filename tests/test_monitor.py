@@ -55,6 +55,16 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(len(products), 2)
         self.assertFalse(products[0].in_stock)
 
+    def test_product_metadata_is_saved_for_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            products = monitor.parse_products((FIXTURES / "mini_one_stock.html").read_text(), BASE_URL)
+            monitor.save_state(path, products)
+            state = json.loads(path.read_text())
+            metadata = state["products"]["https://mall-jp.fujifilm.com/shop/g/g16587294/"]
+            self.assertEqual(metadata["name"], "チェキ専用フィルム 1パック")
+            self.assertEqual(metadata["image_url"], "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg")
+
     def test_parse_single_product_page(self) -> None:
         in_stock = monitor.parse_single_product(
             (FIXTURES / "product_in_stock.html").read_text(),
@@ -62,6 +72,7 @@ class MonitorTests(unittest.TestCase):
         )
         self.assertEqual(in_stock.name, "チェキ専用フィルム 1パック")
         self.assertTrue(in_stock.in_stock)
+        self.assertEqual(in_stock.image_url, "https://mall-jp.fujifilm.com/img/goods/L/16587294.jpg")
 
         sold_out = monitor.parse_single_product(
             (FIXTURES / "product_soldout.html").read_text(),

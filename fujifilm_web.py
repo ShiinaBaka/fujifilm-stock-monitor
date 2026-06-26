@@ -102,6 +102,19 @@ def short_link_label(url: str) -> str:
     return parsed.netloc or "打开"
 
 
+def trusted_image_url(url: object) -> str:
+    value = str(url or "").strip()
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme == "https" and parsed.netloc == FUJIFILM_HOST:
+        return value
+    return ""
+
+
+def fallback_product_image_url(url: str) -> str:
+    match = re.search(r"/shop/g/g(\d+)/?", urllib.parse.urlparse(url).path)
+    return f"https://{FUJIFILM_HOST}/img/goods/S/{match.group(1)}.jpg" if match else ""
+
+
 def run_command(args: list[str], timeout: int = 20) -> tuple[int, str]:
     try:
         completed = subprocess.run(
@@ -545,7 +558,20 @@ class WebApp:
             monthly_dir = resolve_path(task.get("monthly_marker_dir") or defaults.get("monthly_marker_dir"), self.config_dir)
             state = load_json(state_file) if state_file else {}
             stock = state.get("stock", {}) if isinstance(state.get("stock"), dict) else {}
-            in_stock = [url for url, value in stock.items() if value]
+            catalog = state.get("products", {}) if isinstance(state.get("products"), dict) else {}
+            in_stock = []
+            for url, value in stock.items():
+                if not value:
+                    continue
+                details = catalog.get(url, {}) if isinstance(catalog.get(url), dict) else {}
+                in_stock.append(
+                    {
+                        "url": str(url),
+                        "name": str(details.get("name") or f"商品 {product_id_from_url(str(url))}"),
+                        "price": str(details.get("price") or ""),
+                        "image_url": trusted_image_url(details.get("image_url")) or fallback_product_image_url(str(url)),
+                    }
+                )
             marker_file = monthly_dir / f"{datetime.now():%Y-%m}.done" if monthly_dir else None
             notified = load_json(marker_file).get("notified", {}) if marker_file else {}
             result.append(
@@ -1067,11 +1093,24 @@ class Handler(BaseHTTPRequestHandler):
         """
         rows = []
         for task in tasks:
-            stock_links = "".join(
-                f"<a class='stock-chip' href='{html.escape(url)}'>商品 {html.escape(short_link_label(url))}</a>"
-                for url in task["in_stock"]
-            )
-            stock_html = f"<div class='stock-chips'>{stock_links}</div>" if stock_links else "<span class='empty-stock'>暂无有货</span>"
+            stock_items = []
+            for product in task["in_stock"]:
+                image_html = (
+                    f"<img src='{html.escape(product['image_url'])}' alt='' loading='lazy' decoding='async'>"
+                    if product["image_url"]
+                    else "<span class='product-placeholder' aria-hidden='true'>商品</span>"
+                )
+                price_html = f"<small>{html.escape(product['price'])}</small>" if product["price"] else ""
+                stock_items.append(
+                    f"""
+                    <a class='stock-item' href='{html.escape(product['url'])}' target='_blank' rel='noopener'>
+                      <span class='product-thumb'>{image_html}</span>
+                      <span class='product-copy'><strong>{html.escape(product['name'])}</strong>{price_html}</span>
+                      <span class='open-mark' aria-hidden='true'>↗</span>
+                    </a>
+                    """
+                )
+            stock_html = f"<div class='stock-items'>{''.join(stock_items)}</div>" if stock_items else "<span class='empty-stock'>暂无有货</span>"
             paused = "<span class='badge warn'>已暂停</span>" if task["paused"] else "<span class='badge okb'>运行中</span>"
             error = f"<div class='task-error'>{html.escape(str(task['last_error']))}</div>" if task["last_error"] else ""
             in_count = len(task["in_stock"])
@@ -1307,8 +1346,16 @@ class Handler(BaseHTTPRequestHandler):
     .has-stock .stock-meter div:first-child {{ background: #eaf8ef; border-color: #bee8cc; color: #116329; }}
     .stock-block {{ display: grid; gap: 8px; }}
     .stock-block > strong {{ font-size: 14px; }}
-    .stock-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-    .stock-chip {{ display: inline-flex; align-items: center; min-height: 34px; border-radius: 999px; padding: 7px 11px; background: #eaf2ff; color: #0b4cc4; text-decoration: none; font-weight: 650; word-break: normal; }}
+    .stock-items {{ display: grid; gap: 8px; }}
+    .stock-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 60px; padding: 8px; border: 1px solid #d8e6fa; border-radius: 7px; background: #f8fbff; color: var(--ink); text-decoration: none; }}
+    .stock-item:hover {{ border-color: #8db8ef; background: #eef6ff; }}
+    .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid #e4e9f0; border-radius: 5px; background: white; }}
+    .product-thumb img {{ width: 100%; height: 100%; object-fit: contain; }}
+    .product-placeholder {{ color: #64748b; font-size: 10px; }}
+    .product-copy {{ min-width: 0; display: grid; gap: 3px; }}
+    .product-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }}
+    .product-copy small {{ color: #52606f; font-size: 12px; }}
+    .open-mark {{ color: #0b4cc4; font-size: 16px; }}
     .empty-stock {{ color: var(--muted); background: #f8fafc; border: 1px dashed #cfd7e3; border-radius: 8px; padding: 12px; text-align: center; }}
     .section-title {{ display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }}
     .section-title p, .section-head p {{ margin: 4px 0 0; }}

@@ -150,6 +150,43 @@ class WebTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.update_notifications({"serverchan_sendkey": "", "ntfy_topic": "", "webhook_url": "not-a-url"})
 
+    def test_tasks_exposes_cached_product_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "stock": {"https://mall-jp.fujifilm.com/shop/g/g16587294/": True},
+                "products": {"https://mall-jp.fujifilm.com/shop/g/g16587294/": {
+                    "name": "instax mini", "price": "990円", "image_url": "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg"
+                }},
+            }))
+            config = root / "config.json"
+            config.write_text(json.dumps({"tasks": [{"name": "mini", "state_file": "state.json"}]}))
+            app = web.WebApp(argparse.Namespace(
+                config=config, service_name="test.service", install_dir=root, token="", admin_key_hash="", session_secret="test",
+                secure_cookie=False, rp_id="", rp_name="", allowed_origin="", allow_no_auth=True, systemctl_scope="user",
+            ))
+            product = app.tasks()[0]["in_stock"][0]
+            self.assertEqual(product["name"], "instax mini")
+            self.assertEqual(product["price"], "990円")
+            self.assertEqual(product["image_url"], "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg")
+
+    def test_tasks_derives_thumbnail_for_legacy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state.json"
+            state.write_text(json.dumps({"stock": {"https://mall-jp.fujifilm.com/shop/g/g16587294/": True}}))
+            config = root / "config.json"
+            config.write_text(json.dumps({"tasks": [{"state_file": "state.json"}]}))
+            app = web.WebApp(argparse.Namespace(
+                config=config, service_name="test.service", install_dir=root, token="", admin_key_hash="", session_secret="test",
+                secure_cookie=False, rp_id="", rp_name="", allowed_origin="", allow_no_auth=True, systemctl_scope="user",
+            ))
+            self.assertEqual(
+                app.tasks()[0]["in_stock"][0]["image_url"],
+                "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg",
+            )
+
     def test_admin_key_hash_verification(self) -> None:
         encoded = web.make_admin_key_hash("open sesame")
         self.assertTrue(web.verify_admin_key_hash("open sesame", encoded))

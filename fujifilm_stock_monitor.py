@@ -49,6 +49,7 @@ class Product:
     url: str
     price: str
     sold_out: bool
+    image_url: str = ""
 
     @property
     def in_stock(self) -> bool:
@@ -136,6 +137,8 @@ def parse_products(page_html: str, base_url: str) -> list[Product]:
         )
         price = strip_tags(price_match.group(2)) if price_match else ""
         sold_out = bool(re.search(r'\bclass\s*=\s*(["\'])[^"\']*\bsoldout_\b', body, re.I))
+        image_match = re.search(r"<img\b[^>]*>", body, re.I | re.S)
+        image_src = get_attr(image_match.group(0), "src") if image_match else ""
 
         if name:
             products.append(
@@ -144,6 +147,7 @@ def parse_products(page_html: str, base_url: str) -> list[Product]:
                     url=urllib.request.urljoin(base_url, href),
                     price=price,
                     sold_out=sold_out,
+                    image_url=urllib.request.urljoin(base_url, image_src) if image_src else "",
                 )
             )
 
@@ -191,7 +195,23 @@ def parse_single_product(page_html: str, url: str) -> Product:
         re.search(r'\bclass\s*=\s*(["\'])[^"\']*\bsoldout_\b', page_html, re.I)
         or re.search(r"在庫なし|品切れ|販売終了|SOLD\s*OUT", strip_tags(page_html), re.I)
     )
-    return Product(name=name, url=url, price=price, sold_out=sold_out)
+    image_url = ""
+    for pattern in (
+        r'<meta\b[^>]*\bproperty\s*=\s*(["\'])og:image\1[^>]*>',
+        r'<meta\b[^>]*\bname\s*=\s*(["\'])twitter:image\1[^>]*>',
+    ):
+        match = re.search(pattern, page_html, re.I | re.S)
+        if match:
+            image_url = get_attr(match.group(0), "content")
+            if image_url:
+                break
+    return Product(
+        name=name,
+        url=url,
+        price=price,
+        sold_out=sold_out,
+        image_url=urllib.request.urljoin(url, image_url) if image_url else "",
+    )
 
 
 def load_state(path: Path) -> dict[str, bool]:
@@ -218,6 +238,7 @@ def write_state(path: Path, payload: dict) -> None:
 
 
 def save_state(path: Path, products: Iterable[Product]) -> None:
+    products = list(products)
     previous = load_full_state(path)
     payload = {
         **previous,
@@ -226,6 +247,14 @@ def save_state(path: Path, products: Iterable[Product]) -> None:
         "last_failure_alert_count": 0,
         "last_error": "",
         "stock": {product.url: product.in_stock for product in products},
+        "products": {
+            product.url: {
+                "name": product.name,
+                "price": product.price,
+                "image_url": product.image_url,
+            }
+            for product in products
+        },
     }
     write_state(path, payload)
 
