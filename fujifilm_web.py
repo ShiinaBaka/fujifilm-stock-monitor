@@ -85,6 +85,22 @@ def product_id_from_url(url: str) -> str:
     return match.group(1) if match else safe_task_slug(urllib.parse.urlparse(url).path.strip("/"))
 
 
+def short_datetime(value: object) -> str:
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", text)
+    if match:
+        return f"{match.group(2)}-{match.group(3)} {match.group(4)}:{match.group(5)}"
+    return text or "尚无"
+
+
+def short_link_label(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) >= 3:
+        return parts[-1]
+    return parsed.netloc or "打开"
+
+
 def run_command(args: list[str], timeout: int = 20) -> tuple[int, str]:
     try:
         completed = subprocess.run(
@@ -930,45 +946,62 @@ class Handler(BaseHTTPRequestHandler):
         total_products = sum(int(task["total"]) for task in tasks)
         total_in_stock = sum(len(task["in_stock"]) for task in tasks)
         last_checks = [str(task["checked_at"]) for task in tasks if task["checked_at"]]
-        latest_check = max(last_checks) if last_checks else "尚无"
+        latest_check = short_datetime(max(last_checks)) if last_checks else "尚无"
         service_status = self.app.service_status() if admin else ""
         service_badge = ""
         if admin:
             service_class = "okb" if "active" in service_status else "warn"
             service_badge = f"<span class='badge {service_class}'>{html.escape(service_status)}</span>"
+        summary_class = "summary admin-summary" if admin else "summary public-summary"
         summary = f"""
-        <section class="summary">
-          <div><span>任务</span><strong>{len(tasks)}</strong><small>正在跟踪的分类/商品</small></div>
-          <div><span>商品</span><strong>{total_products}</strong><small>最近一次解析数量</small></div>
-          <div><span>有货</span><strong>{total_in_stock}</strong><small>当前可购买链接数</small></div>
-          <div><span>最近检查</span><strong>{html.escape(latest_check)}</strong><small>来自状态文件</small></div>
+        <section class="{summary_class}">
+          <div><span>任务</span><strong>{len(tasks)}</strong>{'<small>正在跟踪</small>' if admin else ''}</div>
+          <div><span>商品</span><strong>{total_products}</strong>{'<small>已解析</small>' if admin else ''}</div>
+          <div><span>有货</span><strong>{total_in_stock}</strong>{'<small>可购买</small>' if admin else ''}</div>
+          <div><span>检查</span><strong>{html.escape(latest_check)}</strong>{'<small>最近一次</small>' if admin else ''}</div>
           {f"<div><span>服务</span><strong>{service_badge}</strong><small>systemd 运行状态</small></div>" if admin else ""}
         </section>
         """
         rows = []
         for task in tasks:
-            stock_links = "".join(f"<li><a href='{html.escape(url)}'>{html.escape(url)}</a></li>" for url in task["in_stock"])
-            stock_html = f"<ul>{stock_links}</ul>" if stock_links else "<span class='muted'>暂无</span>"
+            stock_links = "".join(
+                f"<a class='stock-chip' href='{html.escape(url)}'>商品 {html.escape(short_link_label(url))}</a>"
+                for url in task["in_stock"]
+            )
+            stock_html = f"<div class='stock-chips'>{stock_links}</div>" if stock_links else "<span class='empty-stock'>暂无有货</span>"
             paused = "<span class='badge warn'>已暂停</span>" if task["paused"] else "<span class='badge okb'>运行中</span>"
             error = f"<div class='task-error'>{html.escape(str(task['last_error']))}</div>" if task["last_error"] else ""
+            in_count = len(task["in_stock"])
+            total_count = int(task["total"])
+            card_class = "card stock-card has-stock" if in_count else "card stock-card"
+            admin_metrics = (
+                f"""
+                  <dl class="metric-list">
+                    <dt>本月已推送</dt><dd>{task['notified_count']} 个</dd>
+                    <dt>连续失败</dt><dd>{html.escape(str(task['consecutive_failures']))}</dd>
+                    <dt>校验文本</dt><dd>{html.escape(str(task['require_text'] or '不校验'))}</dd>
+                    <dt>间隔</dt><dd>{html.escape(str(task['interval']))} 秒 + 随机 {html.escape(str(task['jitter']))} 秒</dd>
+                  </dl>
+                """
+                if admin
+                else ""
+            )
             rows.append(
                 f"""
-                <section class="card">
+                <section class="{card_class}">
                   <div class="card-head">
                     <div>
                       <h2>{html.escape(task['name'])}</h2>
-                      <a class="task-url" href="{html.escape(task['url'])}">{html.escape(task['url'])}</a>
+                      <a class="task-url" href="{html.escape(task['url'])}">来源：{html.escape(short_link_label(task['url']))}</a>
                     </div>
                     {paused}
                   </div>
-                  <dl class="metric-list">
-                    <dt>上次检查</dt><dd>{html.escape(str(task['checked_at'] or '尚无'))}</dd>
-                    <dt>商品数量</dt><dd>{task['total']} 个，当前有货 {len(task['in_stock'])} 个</dd>
-                    {f"<dt>本月已推送</dt><dd>{task['notified_count']} 个</dd>" if admin else ""}
-                    {f"<dt>连续失败</dt><dd>{html.escape(str(task['consecutive_failures']))}</dd>" if admin else ""}
-                    {f"<dt>校验文本</dt><dd>{html.escape(str(task['require_text'] or '不校验'))}</dd>" if admin else ""}
-                    {f"<dt>间隔</dt><dd>{html.escape(str(task['interval']))} 秒 + 随机 {html.escape(str(task['jitter']))} 秒</dd>" if admin else ""}
-                  </dl>
+                  <div class="stock-meter">
+                    <div><span>有货</span><strong>{in_count}</strong></div>
+                    <div><span>总数</span><strong>{total_count}</strong></div>
+                    <div><span>检查</span><strong>{html.escape(short_datetime(task['checked_at']))}</strong></div>
+                  </div>
+                  {admin_metrics}
                   {error if admin else ""}
                   <div class="stock-block"><strong>当前有货</strong>{stock_html}</div>
                   {self.task_admin_buttons(task) if admin else ""}
@@ -980,16 +1013,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.page(
                 "Fujifilm 库存状态",
                 f"""
-                <section class="hero">
+                <section class="hero compact-hero">
                   <div>
-                    <p class="eyebrow">Public Stock Board</p>
-                    <h2>Fujifilm Mall 库存状态</h2>
-                    <p>这里公开显示当前监控结果，不开放后台操作。</p>
+                    <h2>Fujifilm 库存</h2>
+                    <p>{total_in_stock} 个有货 · {len(tasks)} 个任务 · {html.escape(latest_check)} 更新</p>
                   </div>
                   <a class="button" href="/admin">后台管理</a>
                 </section>
                 {summary}
-                <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
+                <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
                 """,
             )
         return self.page(
@@ -1096,19 +1128,27 @@ class Handler(BaseHTTPRequestHandler):
     h1 {{ margin: 0; font-size: 23px; }} h2 {{ margin: 0; font-size: 18px; }} p {{ line-height: 1.55; }}
     .panel, .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }}
     .hero {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: #17202a; color: white; border-radius: 8px; padding: 20px; }}
-    .hero h2 {{ margin: 2px 0 6px; font-size: 24px; }} .hero p {{ margin: 0; color: #d7dde8; }}
+    .compact-hero {{ padding: 16px 18px; }}
+    .hero h2 {{ margin: 2px 0 6px; font-size: 24px; }} .compact-hero h2 {{ margin: 0; font-size: 22px; }} .hero p {{ margin: 0; color: #d7dde8; }}
     .hero-actions, .action-bar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
     .eyebrow {{ margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #86b7ff !important; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }}
-    .summary div {{ background: white; border: 1px solid var(--line); border-radius: 8px; padding: 15px; min-width: 0; }}
+    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
+    .public-summary {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
+    .summary div {{ background: white; border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; min-width: 0; }}
     .summary span {{ display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }}
-    .summary strong {{ display: block; font-size: 21px; overflow-wrap: anywhere; }}
+    .summary strong {{ display: block; font-size: 20px; overflow-wrap: anywhere; line-height: 1.15; }}
+    .public-summary strong {{ font-size: 24px; }}
     .summary small {{ display: block; color: var(--muted); margin-top: 6px; font-size: 12px; }}
     .admin-grid, .auth-grid {{ display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .85fr); gap: 18px; align-items: start; }}
     .auth-shell {{ display: grid; gap: 18px; }} .auth-hero {{ min-height: 150px; }}
     .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }}
+    .public-task-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     .card-head, .section-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }}
-    .task-url {{ display: block; margin-top: 8px; font-size: 13px; }}
+    .stock-card {{ display: grid; gap: 14px; align-content: start; }}
+    .stock-card .card-head {{ margin-bottom: 0; }}
+    .stock-card.has-stock {{ border-color: #9ad8ae; box-shadow: 0 0 0 3px rgba(18,128,92,.08); }}
+    .task-url {{ display: inline-flex; width: fit-content; margin-top: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; color: #475467; font-size: 12px; text-decoration: none; background: #f8fafc; }}
+    .task-url:hover {{ border-color: #b8c0cc; background: #eef4ff; color: #0b4cc4; }}
     form {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }}
     label {{ display: grid; gap: 6px; flex: 1 1 240px; font-size: 14px; color: #374151; }}
     input, select {{ width: 100%; border: 1px solid #b8c0cc; border-radius: 6px; padding: 11px 12px; font-size: 15px; background: white; }}
@@ -1121,21 +1161,31 @@ class Handler(BaseHTTPRequestHandler):
     .danger, button[value="delete"] {{ background: var(--red); }} .danger:hover, button[value="delete"]:hover {{ background: #8f1c13; }}
     .danger-light {{ background: #fff1ef; color: var(--red); border: 1px solid #f4b8b0; }} .danger-light:hover {{ background: #ffe4e0; }}
     .wide-button {{ width: 100%; }}
-    .inline-actions {{ margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }}
+    .inline-actions {{ margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--line); }}
     .toolbar-panel form {{ margin-top: 12px; }}
     .public-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
-    a {{ color: #0969da; word-break: break-all; }} .metric-list {{ display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; margin: 14px 0; }}
+    a {{ color: #0969da; word-break: break-all; }} .metric-list {{ display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line); }}
     dt {{ color: #5f6b7a; }} dd {{ margin: 0; min-width: 0; }}
     pre {{ white-space: pre-wrap; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 14px; overflow: auto; }}
     .badge {{ display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 4px 9px; font-size: 13px; white-space: nowrap; }} .warn {{ background: #fff0c2; color: #7a4b00; }} .okb {{ background: #dff8e7; color: #116329; }}
     .notice {{ margin: 0; padding: 12px 14px; border-radius: 8px; }} .ok {{ background: #dff8e7; border: 1px solid #9ad8ae; }} .error, .error-box {{ color: var(--red); }} .error-box {{ background: #fff1ef; border: 1px solid #f4b8b0; }}
     .task-error {{ margin: 12px 0; color: var(--red); background: #fff1ef; border: 1px solid #f4b8b0; border-radius: 8px; padding: 10px; font-size: 13px; }}
-    .stock-block {{ display: grid; gap: 8px; margin-top: 12px; }} .stock-block ul {{ margin: 0; padding-left: 20px; }}
+    .stock-meter {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }}
+    .stock-meter div {{ border-radius: 8px; background: #f8fafc; border: 1px solid #edf1f7; padding: 10px; min-width: 0; }}
+    .stock-meter span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }}
+    .stock-meter strong {{ display: block; font-size: 18px; line-height: 1.15; overflow-wrap: anywhere; }}
+    .has-stock .stock-meter div:first-child {{ background: #eaf8ef; border-color: #bee8cc; color: #116329; }}
+    .stock-block {{ display: grid; gap: 8px; }}
+    .stock-block > strong {{ font-size: 14px; }}
+    .stock-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .stock-chip {{ display: inline-flex; align-items: center; min-height: 34px; border-radius: 999px; padding: 7px 11px; background: #eaf2ff; color: #0b4cc4; text-decoration: none; font-weight: 650; word-break: normal; }}
+    .empty-stock {{ color: var(--muted); background: #f8fafc; border: 1px dashed #cfd7e3; border-radius: 8px; padding: 12px; text-align: center; }}
     .section-title {{ display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }}
     .section-title p, .section-head p {{ margin: 4px 0 0; }}
     .small {{ margin-top: 8px; font-size: 13px; }} .status-line {{ min-height: 18px; }}
     .muted {{ color: var(--muted); }}
-    @media (max-width: 760px) {{ main {{ padding: 16px 12px 28px; }} .admin-grid, .auth-grid {{ grid-template-columns: 1fr; }} .task-grid {{ grid-template-columns: 1fr; }} .metric-list {{ grid-template-columns: 1fr; }} button, .button {{ width: 100%; }} .hero {{ align-items: stretch; }} .hero-actions {{ width: 100%; }} }}
+    @media (max-width: 900px) {{ .public-summary, .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+    @media (max-width: 760px) {{ main {{ padding: 16px 12px 28px; }} .admin-grid, .auth-grid, .public-summary, .task-grid, .public-task-grid {{ grid-template-columns: 1fr; }} .metric-list {{ grid-template-columns: 1fr; }} button, .button {{ width: 100%; }} .hero {{ align-items: stretch; }} .hero-actions {{ width: 100%; }} .stock-meter {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} }}
   </style>
 </head>
 <body>
