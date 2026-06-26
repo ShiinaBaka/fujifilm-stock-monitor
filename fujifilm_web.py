@@ -1121,7 +1121,6 @@ class Handler(BaseHTTPRequestHandler):
                     <h2>Fujifilm 库存</h2>
                     <p>{total_in_stock} 个有货 · {len(tasks)} 个任务 · {html.escape(latest_check)} 更新</p>
                   </div>
-                  <a class="button" href="/admin">后台管理</a>
                 </section>
                 {summary}
                 <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
