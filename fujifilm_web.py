@@ -1132,16 +1132,17 @@ class Handler(BaseHTTPRequestHandler):
             service_class = "okb" if service_ok else "warn"
             service_label = "正常" if service_ok else "异常"
             service_badge = f"<span class='badge {service_class}'><i></i>{service_label}</span>"
-        summary_class = "summary admin-summary" if admin else "summary public-summary"
-        summary = f"""
-        <section class="{summary_class}" aria-label="库存概览">
-          <div><span>监控任务</span><strong>{len(tasks)}</strong></div>
-          <div><span>商品总数</span><strong>{total_products}</strong></div>
-          <div class="stock-summary"><span>当前有货</span><strong>{total_in_stock}</strong></div>
-          <div><span>最近更新</span><strong class="time-value">{html.escape(latest_check)}</strong></div>
-          {f"<div><span>监控服务</span><strong class='service-value {service_class}'>{service_label}</strong></div>" if admin else ""}
-        </section>
-        """
+        summary = (
+            f"""
+            <section class="summary admin-summary" aria-label="运行概览">
+              <div class="stock-summary"><span>当前有货</span><strong>{total_in_stock}</strong></div>
+              <div><span>监控服务</span><strong class="service-value {service_class}">{service_label}</strong></div>
+              <div><span>最近更新</span><strong class="time-value">{html.escape(latest_check)}</strong></div>
+            </section>
+            """
+            if admin
+            else ""
+        )
         rows = []
         for task in tasks:
             stock_items = []
@@ -1190,6 +1191,27 @@ class Handler(BaseHTTPRequestHandler):
                 if admin
                 else ""
             )
+            if not admin:
+                inventory_class = "available" if in_count else "empty"
+                inventory_text = f"{in_count} 件有货" if in_count else "暂无有货"
+                public_products = f"<div class='monitor-products'>{stock_html}</div>" if in_count else ""
+                rows.append(
+                    f"""
+                    <section class="monitor-row {inventory_class}">
+                      <div class="monitor-identity">
+                        <h2>{html.escape(task['name'])}</h2>
+                        <a class="task-url" href="{html.escape(task['url'])}" target="_blank" rel="noopener">查看分类 ↗</a>
+                      </div>
+                      <div class="monitor-state">
+                        <strong>{inventory_text}</strong>
+                        <small>{total_count} 件商品 · {html.escape(short_datetime(task['checked_at']))} 更新</small>
+                      </div>
+                      {"<span class='badge warn'><i></i>已暂停</span>" if task["paused"] else ""}
+                      {public_products}
+                    </section>
+                    """
+                )
+                continue
             rows.append(
                 f"""
                 <section class="{card_class}">
@@ -1252,16 +1274,13 @@ class Handler(BaseHTTPRequestHandler):
                 f"""
                 <section class="page-heading public-heading">
                   <div>
-                    <p class="page-kicker">FUJIFILM MALL</p>
-                    <h1>库存监控</h1>
-                    <p>更新于 {html.escape(latest_check)}</p>
+                    <h1>库存状态</h1>
+                    <p>{len(tasks)} 个分类 · {total_products} 件商品 · {html.escape(latest_check)} 更新</p>
                   </div>
                   <span class="availability-status {availability_class}"><i></i>{availability_text}</span>
                 </section>
-                {summary}
-                <div class="section-title"><div><p class="section-kicker">实时状态</p><h2>监控列表</h2></div></div>
-                <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
-                {history_html}
+                <section class="panel monitor-list">{''.join(rows) or "<div class='empty-state'><strong>暂无监控任务</strong></div>"}</section>
+                {history_html if stock_history else ""}
                 """,
             )
         notifications = self.app.notification_settings()
@@ -1292,17 +1311,25 @@ class Handler(BaseHTTPRequestHandler):
                 <div><p class="section-kicker">运行状态</p><h2>服务控制</h2></div>
                 {service_badge}
               </div>
-              <form method="post" class="action-bar">
-                <input type="hidden" name="auth_token" value="{csrf_field}">
-                <button name="action" value="check">立即检查</button>
+              <div class="action-bar">
+                <form method="post">
+                  <input type="hidden" name="auth_token" value="{csrf_field}">
+                  <button name="action" value="check">立即检查</button>
+                </form>
                 <a class="button secondary" href="/logs">运行日志</a>
-                <button name="action" value="restart" class="secondary">重启服务</button>
-                <button name="action" value="stop" class="danger-light">暂停服务</button>
-                <button name="action" value="start" class="success-light">恢复服务</button>
-              </form>
+                <details class="service-actions">
+                  <summary class="button secondary">更多操作</summary>
+                  <form method="post">
+                    <input type="hidden" name="auth_token" value="{csrf_field}">
+                    <button name="action" value="restart" class="secondary">重启服务</button>
+                    <button name="action" value="stop" class="danger-light">暂停服务</button>
+                    <button name="action" value="start" class="success-light">恢复服务</button>
+                  </form>
+                </details>
+              </div>
             </section>
-            <section class="admin-grid">
-            <section class="panel add-panel">
+            <section class="admin-simple-grid">
+            <section class="panel add-panel" id="new-task">
               <div class="section-head">
                 <div><p class="section-kicker">任务配置</p><h2>新建监控</h2></div>
               </div>
@@ -1311,20 +1338,28 @@ class Handler(BaseHTTPRequestHandler):
                 <input type="hidden" name="action" value="add">
                 <label class="full-field">Fujifilm 链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/c/..." required></label>
                 <label>任务名称<input name="name" placeholder="例如 MINI 99"></label>
-                <label>分类标题<input name="require_text" placeholder="可选"></label>
-                <label>检查间隔<input type="number" min="600" step="60" name="interval" inputmode="numeric" placeholder="3600 秒"></label>
-                <label>随机延迟<input type="number" min="0" step="60" name="jitter" inputmode="numeric" placeholder="600 秒"></label>
-                <label class="full-field">补货后
+                <label>补货后
                   <select name="policy">
                     <option value="monthly">每款商品每月提醒一次</option>
                     <option value="stop">提醒后永久停止</option>
                     <option value="none">每次补货都提醒</option>
                   </select>
                 </label>
+                <details class="advanced-options full-field">
+                  <summary>高级设置</summary>
+                  <div class="advanced-grid">
+                    <label>分类标题<input name="require_text" placeholder="可选"></label>
+                    <label>检查间隔<input type="number" min="600" step="60" name="interval" inputmode="numeric" placeholder="3600 秒"></label>
+                    <label>随机延迟<input type="number" min="0" step="60" name="jitter" inputmode="numeric" placeholder="600 秒"></label>
+                  </div>
+                </details>
                 <button type="submit" class="wide-button full-field">添加任务</button>
               </form>
             </section>
-            <section class="panel push-panel">
+            <details class="panel management-settings">
+              <summary>通知与登录</summary>
+              <div class="management-grid">
+            <section class="settings-section push-panel">
               <div class="section-head">
                 <div><p class="section-kicker">消息通知</p><h2>推送渠道</h2></div>
                 {notification_badge}
@@ -1342,7 +1377,7 @@ class Handler(BaseHTTPRequestHandler):
                 <button name="action" value="test-notifications" class="secondary wide-button">发送测试</button>
               </form>
             </section>
-            <section class="panel passkey-panel">
+            <section class="settings-section passkey-panel">
               <div class="section-head">
                 <div><p class="section-kicker">安全访问</p><h2>登录设备</h2></div>
                 <span class="count-label">Passkey</span>
@@ -1350,6 +1385,8 @@ class Handler(BaseHTTPRequestHandler):
               <button type="button" id="passkey-register" class="wide-button secondary">添加当前设备</button>
               <p id="passkey-status" class="small muted status-line"></p>
             </section>
+              </div>
+            </details>
             </section>
             <div class="section-title"><div><p class="section-kicker">运行任务</p><h2>监控任务</h2></div><span class="count-label">{len(tasks)} 个</span></div>
             <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}</section>
@@ -1410,7 +1447,7 @@ class Handler(BaseHTTPRequestHandler):
     .card {{ padding: 19px; }}
     .summary {{ display: grid; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
     .public-summary {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
-    .admin-summary {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+    .admin-summary {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     .summary div {{ min-width: 0; padding: 17px 20px; border-right: 1px solid var(--line); }}
     .summary div:last-child {{ border-right: 0; }}
     .summary span {{ display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; }}
@@ -1424,6 +1461,17 @@ class Handler(BaseHTTPRequestHandler):
     .section-title {{ align-items: flex-end; margin-top: 4px; }}
     .section-head, .card-head {{ margin-bottom: 18px; }}
     .count-label {{ color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }}
+    .monitor-list {{ padding: 0; overflow: hidden; }}
+    .monitor-row {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 17px 20px; border-bottom: 1px solid var(--line); }}
+    .monitor-row:last-child {{ border-bottom: 0; }}
+    .monitor-row.available {{ box-shadow: inset 3px 0 0 var(--green); }}
+    .monitor-identity {{ min-width: 0; }}
+    .monitor-identity h2 {{ font-size: 16px; }}
+    .monitor-state {{ min-width: 160px; display: grid; justify-items: end; gap: 4px; text-align: right; }}
+    .monitor-state strong {{ font-size: 14px; }}
+    .monitor-state small {{ color: var(--muted); font-size: 12px; white-space: nowrap; }}
+    .monitor-row.available .monitor-state strong {{ color: var(--green); }}
+    .monitor-products {{ grid-column: 1 / -1; padding-top: 4px; }}
     .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }}
     .public-task-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     .stock-card {{ display: grid; gap: 16px; align-content: start; }}
@@ -1489,14 +1537,28 @@ class Handler(BaseHTTPRequestHandler):
     .danger-link:hover {{ border-color: transparent; background: var(--red-soft); }}
     .wide-button {{ width: 100%; }}
     .action-bar, .task-actions {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
+    .service-actions {{ position: relative; }}
+    .service-actions > summary, .advanced-options > summary, .management-settings > summary {{ list-style: none; cursor: pointer; }}
+    .service-actions > summary::-webkit-details-marker, .advanced-options > summary::-webkit-details-marker, .management-settings > summary::-webkit-details-marker {{ display: none; }}
+    .service-actions > form {{ position: absolute; z-index: 5; top: 46px; right: 0; width: 150px; display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 30px rgba(20, 24, 30, .12); }}
+    .service-actions > form button {{ width: 100%; }}
     .toolbar-panel .section-head {{ align-items: center; }}
-    .admin-grid {{ display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, .85fr); gap: 16px; align-items: start; }}
-    .passkey-panel {{ grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: center; gap: 6px 20px; }}
-    .passkey-panel .section-head {{ grid-column: 1; grid-row: 1 / span 2; margin: 0; }}
-    .passkey-panel .wide-button, .passkey-panel .status-line {{ grid-column: 2; }}
-    .passkey-panel .status-line {{ margin: 0; }}
+    .admin-simple-grid {{ display: grid; gap: 16px; }}
     .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .full-field {{ grid-column: 1 / -1; }}
+    .advanced-options {{ color: var(--muted); font-size: 12px; }}
+    .advanced-options > summary {{ width: fit-content; }}
+    .advanced-options > summary:hover {{ color: var(--ink); }}
+    .advanced-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }}
+    .management-settings {{ padding: 0; }}
+    .management-settings > summary {{ padding: 18px 20px; font-weight: 700; }}
+    .management-settings[open] > summary {{ border-bottom: 1px solid var(--line); }}
+    .management-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+    .settings-section {{ min-width: 0; padding: 20px; }}
+    .settings-section + .settings-section {{ border-left: 1px solid var(--line); }}
+    .management-grid .passkey-panel {{ display: block; }}
+    .management-grid .passkey-panel .section-head {{ margin-bottom: 18px; }}
+    .management-grid .passkey-panel .status-line {{ margin-top: 8px; }}
     .settings-form {{ display: grid; gap: 12px; }}
     .inline-actions {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }}
     .task-actions {{ padding-top: 4px; }}
@@ -1523,12 +1585,8 @@ class Handler(BaseHTTPRequestHandler):
     .muted {{ color: var(--muted); }}
     @media (max-width: 940px) {{
       .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .admin-summary {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
-      .admin-summary div:nth-child(3) {{ border-right: 0; }}
-      .admin-summary div:nth-child(n+4) {{ border-top: 1px solid var(--line); }}
-      .admin-grid {{ grid-template-columns: 1fr; }}
-      .passkey-panel {{ grid-column: auto; grid-template-columns: 1fr; }}
-      .passkey-panel .section-head, .passkey-panel .wide-button, .passkey-panel .status-line {{ grid-column: 1; grid-row: auto; }}
+      .management-grid {{ grid-template-columns: 1fr; }}
+      .settings-section + .settings-section {{ border-left: 0; border-top: 1px solid var(--line); }}
     }}
     @media (max-width: 680px) {{
       header {{ height: 56px; }}
@@ -1544,13 +1602,18 @@ class Handler(BaseHTTPRequestHandler):
       .summary div {{ padding: 14px; border-bottom: 1px solid var(--line); }}
       .summary div:nth-child(2n) {{ border-right: 0; }}
       .summary div:nth-last-child(-n+2) {{ border-bottom: 0; }}
-      .admin-summary div:nth-child(3) {{ border-right: 1px solid var(--line); }}
-      .admin-summary div:nth-child(n+4) {{ border-top: 0; }}
+      .admin-summary div:nth-child(3) {{ border-right: 0; }}
       .admin-summary div:last-child {{ grid-column: 1 / -1; border-top: 1px solid var(--line); border-right: 0; }}
       .summary strong {{ font-size: 23px; }}
       .summary .time-value {{ font-size: 17px; }}
       .task-grid, .public-task-grid, .form-grid {{ grid-template-columns: 1fr; }}
       .full-field {{ grid-column: auto; }}
+      .advanced-grid {{ grid-template-columns: 1fr; }}
+      .monitor-row {{ grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 15px; }}
+      .monitor-state {{ min-width: 0; }}
+      .monitor-state small {{ white-space: normal; }}
+      .monitor-row > .badge {{ grid-column: 1 / -1; width: fit-content; }}
+      .monitor-products {{ grid-column: 1 / -1; }}
       .stock-meter {{ grid-template-columns: 64px 64px minmax(0, 1fr); }}
       .action-bar {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .action-bar > * {{ width: 100%; }}
