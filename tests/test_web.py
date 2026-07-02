@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,14 @@ import fujifilm_web as web
 
 
 class WebTests(unittest.TestCase):
+    def test_write_json_preserves_existing_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.json"
+            path.write_text("{}")
+            os.chmod(path, 0o640)
+            web.write_json(path, {"tasks": []})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+
     def test_validate_fujifilm_url(self) -> None:
         self.assertEqual(
             web.validate_fujifilm_url("https://mall-jp.fujifilm.com/shop/g/g16587294/?x=1"),

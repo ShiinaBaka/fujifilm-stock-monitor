@@ -53,11 +53,16 @@ def load_json(path: Path) -> dict:
 
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_stat = path.stat() if path.exists() else None
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
-    os.chmod(tmp, 0o600)
+    if existing_stat:
+        os.chmod(tmp, existing_stat.st_mode & 0o777)
+        os.chown(tmp, existing_stat.st_uid, existing_stat.st_gid)
+    else:
+        os.chmod(tmp, 0o600)
     tmp.replace(path)
 
 
