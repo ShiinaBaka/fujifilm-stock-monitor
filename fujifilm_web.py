@@ -559,6 +559,22 @@ class WebApp:
             state = load_json(state_file) if state_file else {}
             stock = state.get("stock", {}) if isinstance(state.get("stock"), dict) else {}
             catalog = state.get("products", {}) if isinstance(state.get("products"), dict) else {}
+            history_data = state.get("stock_history", []) if isinstance(state.get("stock_history"), list) else []
+            history = []
+            for item in history_data:
+                if not isinstance(item, dict) or not item.get("url"):
+                    continue
+                item_url = str(item["url"])
+                history.append(
+                    {
+                        "detected_at": str(item.get("detected_at") or ""),
+                        "task": str(item.get("task") or name),
+                        "name": str(item.get("name") or f"商品 {product_id_from_url(item_url)}"),
+                        "price": str(item.get("price") or ""),
+                        "url": item_url,
+                        "image_url": trusted_image_url(item.get("image_url")) or fallback_product_image_url(item_url),
+                    }
+                )
             in_stock = []
             for url, value in stock.items():
                 if not value:
@@ -589,6 +605,7 @@ class WebApp:
                     "last_error": state.get("last_error", ""),
                     "total": len(stock),
                     "in_stock": in_stock,
+                    "history": history,
                     "notified_count": len(notified) if isinstance(notified, dict) else 0,
                     "paused": bool(stop_marker and stop_marker.exists()),
                 }
@@ -1074,6 +1091,11 @@ class Handler(BaseHTTPRequestHandler):
         tasks = self.app.tasks()
         total_products = sum(int(task["total"]) for task in tasks)
         total_in_stock = sum(len(task["in_stock"]) for task in tasks)
+        stock_history = sorted(
+            (item for task in tasks for item in task["history"]),
+            key=lambda item: item["detected_at"],
+            reverse=True,
+        )[:12]
         last_checks = [str(task["checked_at"]) for task in tasks if task["checked_at"]]
         latest_check = short_datetime(max(last_checks)) if last_checks else "尚无"
         service_status = self.app.service_status() if admin else ""
@@ -1150,6 +1172,37 @@ class Handler(BaseHTTPRequestHandler):
                 </section>
                 """
             )
+        history_rows = []
+        for item in stock_history:
+            image_html = (
+                f"<img src='{html.escape(item['image_url'])}' alt='' loading='lazy' decoding='async'>"
+                if item["image_url"]
+                else "<span class='product-placeholder' aria-hidden='true'>商品</span>"
+            )
+            meta = html.escape(item["task"])
+            if item["price"]:
+                meta += f" · {html.escape(item['price'])}"
+            history_rows.append(
+                f"""
+                <a class="history-item" href="{html.escape(item['url'])}" target="_blank" rel="noopener">
+                  <span class="product-thumb">{image_html}</span>
+                  <span class="history-copy">
+                    <strong>{html.escape(item['name'])}</strong>
+                    <small>{meta}</small>
+                  </span>
+                  <time>{html.escape(short_datetime(item['detected_at']))}</time>
+                </a>
+                """
+            )
+        history_html = f"""
+        <section class="panel history-panel">
+          <div class="section-head">
+            <div><h2>补货历史</h2><p class="muted">最近记录到的有货变化</p></div>
+            <span class="badge {'okb' if stock_history else 'warn'}">{len(stock_history)} 条</span>
+          </div>
+          <div class="history-list">{''.join(history_rows) if history_rows else "<span class='empty-stock'>还没有补货记录</span>"}</div>
+        </section>
+        """
         csrf_field = html.escape(self.csrf_token())
         if not admin:
             return self.page(
@@ -1163,6 +1216,7 @@ class Handler(BaseHTTPRequestHandler):
                 </section>
                 {summary}
                 <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
+                {history_html}
                 """,
             )
         notifications = self.app.notification_settings()
@@ -1266,6 +1320,7 @@ class Handler(BaseHTTPRequestHandler):
             </section>
             <div class="section-title"><h2>监控任务</h2><p class="muted">每张卡片都可以单独清空本月去重或删除。</p></div>
             <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}</section>
+            {history_html}
             """,
         )
 
@@ -1356,13 +1411,23 @@ class Handler(BaseHTTPRequestHandler):
     .product-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }}
     .product-copy small {{ color: #52606f; font-size: 12px; }}
     .open-mark {{ color: #0b4cc4; font-size: 16px; }}
+    .history-panel {{ padding: 0; overflow: hidden; }}
+    .history-panel .section-head {{ padding: 16px 18px; margin: 0; border-bottom: 1px solid var(--line); }}
+    .history-list {{ display: grid; }}
+    .history-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 18px; color: var(--ink); text-decoration: none; border-bottom: 1px solid #edf1f5; }}
+    .history-item:last-child {{ border-bottom: 0; }}
+    .history-item:hover {{ background: #f8fbff; }}
+    .history-copy {{ min-width: 0; display: grid; gap: 3px; }}
+    .history-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }}
+    .history-copy small, .history-item time {{ color: var(--muted); font-size: 12px; }}
+    .history-item time {{ white-space: nowrap; }}
     .empty-stock {{ color: var(--muted); background: #f8fafc; border: 1px dashed #cfd7e3; border-radius: 8px; padding: 12px; text-align: center; }}
     .section-title {{ display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }}
     .section-title p, .section-head p {{ margin: 4px 0 0; }}
     .small {{ margin-top: 8px; font-size: 13px; }} .status-line {{ min-height: 18px; }}
     .muted {{ color: var(--muted); }}
     @media (max-width: 900px) {{ .public-summary, .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
-    @media (max-width: 760px) {{ main {{ padding: 16px 12px 28px; }} .admin-grid, .auth-grid, .public-summary, .task-grid, .public-task-grid {{ grid-template-columns: 1fr; }} .metric-list {{ grid-template-columns: 1fr; }} button, .button {{ width: 100%; }} .hero {{ align-items: stretch; }} .hero-actions {{ width: 100%; }} .stock-meter {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} }}
+    @media (max-width: 760px) {{ main {{ padding: 16px 12px 28px; }} .admin-grid, .auth-grid, .public-summary, .task-grid, .public-task-grid {{ grid-template-columns: 1fr; }} .metric-list {{ grid-template-columns: 1fr; }} button, .button {{ width: 100%; }} .hero {{ align-items: stretch; }} .hero-actions {{ width: 100%; }} .stock-meter {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} .history-item {{ grid-template-columns: 40px minmax(0, 1fr); }} .history-item time {{ grid-column: 2; }} }}
   </style>
 </head>
 <body>

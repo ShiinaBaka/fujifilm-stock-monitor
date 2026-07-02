@@ -259,6 +259,30 @@ def save_state(path: Path, products: Iterable[Product]) -> None:
     write_state(path, payload)
 
 
+def record_stock_history(path: Path, task_name: str, products: Iterable[Product]) -> None:
+    products = list(products)
+    if not products:
+        return
+    state = load_full_state(path)
+    history = state.get("stock_history", [])
+    if not isinstance(history, list):
+        history = []
+    detected_at = datetime.now().isoformat(timespec="seconds")
+    history.extend(
+        {
+            "detected_at": detected_at,
+            "task": task_name,
+            "name": product.name,
+            "price": product.price,
+            "url": product.url,
+            "image_url": product.image_url,
+        }
+        for product in products
+    )
+    state["stock_history"] = history[-200:]
+    write_state(path, state)
+
+
 def save_failure(path: Path, error: str) -> tuple[int, int]:
     previous = load_full_state(path)
     failures = int(previous.get("consecutive_failures", 0)) + 1
@@ -571,7 +595,11 @@ def run_check(args: argparse.Namespace) -> int:
     if not products:
         raise RuntimeError("No products found. The page layout may have changed.")
 
-    previous = load_state(args.state_file)
+    previous_stock = load_state(args.state_file)
+    newly_available = [
+        product for product in products if product.in_stock and previous_stock.get(product.url) is not True
+    ]
+    previous = previous_stock
     monthly_notified: set[str] = set()
     if args.monthly_marker_dir:
         monthly_notified = load_monthly_notified(monthly_marker_path(args.monthly_marker_dir))
@@ -582,11 +610,13 @@ def run_check(args: argparse.Namespace) -> int:
     restocked = [
         product
         for product in products
-        if product.in_stock and (args.alert_on_first_run or previous.get(product.url) is False)
+        if product.in_stock
+        and (previous.get(product.url) is False or (args.alert_on_first_run and product.url not in previous))
         and product.url not in monthly_notified
     ]
 
     save_state(args.state_file, products)
+    record_stock_history(args.state_file, args.task_name, newly_available)
 
     in_stock = [product for product in products if product.in_stock]
     sold_out_count = len(products) - len(in_stock)

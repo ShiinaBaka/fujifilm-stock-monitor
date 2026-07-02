@@ -65,6 +65,26 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(metadata["name"], "チェキ専用フィルム 1パック")
             self.assertEqual(metadata["image_url"], "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg")
 
+    def test_stock_history_records_transition_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            check = args(tmp, "mini_one_stock.html", alert_on_first_run=True)
+            monitor.run_check(check)
+            monitor.run_check(check)
+            history = json.loads(check.state_file.read_text())["stock_history"]
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["task"], "mini 相纸")
+            self.assertEqual(history[0]["name"], "チェキ専用フィルム 1パック")
+
+    def test_alert_on_first_run_does_not_repeat_without_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            check = args(tmp, "mini_one_stock.html", alert_on_first_run=True)
+            with mock.patch.object(monitor, "alert", return_value=True) as mocked_alert:
+                monitor.run_check(check)
+                monitor.run_check(check)
+            self.assertEqual(mocked_alert.call_count, 1)
+
     def test_parse_single_product_page(self) -> None:
         in_stock = monitor.parse_single_product(
             (FIXTURES / "product_in_stock.html").read_text(),

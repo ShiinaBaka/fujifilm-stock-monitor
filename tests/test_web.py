@@ -159,6 +159,11 @@ class WebTests(unittest.TestCase):
                 "products": {"https://mall-jp.fujifilm.com/shop/g/g16587294/": {
                     "name": "instax mini", "price": "990円", "image_url": "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg"
                 }},
+                "stock_history": [{
+                    "detected_at": "2026-07-02T12:00:00", "task": "mini", "name": "instax mini",
+                    "price": "990円", "url": "https://mall-jp.fujifilm.com/shop/g/g16587294/",
+                    "image_url": "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg"
+                }],
             }))
             config = root / "config.json"
             config.write_text(json.dumps({"tasks": [{"name": "mini", "state_file": "state.json"}]}))
@@ -170,6 +175,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(product["name"], "instax mini")
             self.assertEqual(product["price"], "990円")
             self.assertEqual(product["image_url"], "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg")
+            self.assertEqual(app.tasks()[0]["history"][0]["name"], "instax mini")
 
     def test_tasks_derives_thumbnail_for_legacy_state(self) -> None:
         with tempfile.TemporaryDirectory() as td:
