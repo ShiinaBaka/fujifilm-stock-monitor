@@ -951,7 +951,18 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect("/login")
             return
         if parsed.path == "/logs":
-            self.send_html(self.page("日志", f"<pre>{html.escape(self.app.logs())}</pre><p><a href='/admin'>返回后台</a></p>"))
+            self.send_html(
+                self.page(
+                    "运行日志",
+                    f"""
+                    <section class="page-heading">
+                      <div><p class="page-kicker">系统记录</p><h1>运行日志</h1></div>
+                      <a class="button secondary" href="/admin">返回控制台</a>
+                    </section>
+                    <section class="panel console-panel"><pre>{html.escape(self.app.logs())}</pre></section>
+                    """,
+                )
+            )
             return
         if parsed.path == "/admin":
             self.send_html(self.dashboard(admin=True))
@@ -1001,7 +1012,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.end_headers()
                     return
-                self.send_html(self.login_page("通行密钥不正确。"), HTTPStatus.UNAUTHORIZED)
+                self.send_html(self.login_page("备用密钥不正确。"), HTTPStatus.UNAUTHORIZED)
                 return
             if not self.is_authenticated():
                 self.redirect("/login")
@@ -1032,59 +1043,69 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/admin?msg=" + urllib.parse.quote(f"已清空本月去重：{name}"))
             elif action in {"start", "stop", "restart"}:
                 code, output = self.app.systemctl(action)
-                msg = f"{action}: {'成功' if code == 0 else '失败'} {output}"
+                action_name = {"start": "恢复服务", "stop": "暂停服务", "restart": "重启服务"}[action]
+                msg = f"{action_name}{'成功' if code == 0 else '失败'}：{output}"
                 self.redirect("/admin?msg=" + urllib.parse.quote(msg))
             elif action == "check":
                 code, output = self.app.check_once()
                 title = "检查完成" if code == 0 else "检查失败"
-                self.send_html(self.page(title, f"<pre>{html.escape(output)}</pre><p><a href='/admin'>返回后台</a></p>"))
+                self.send_html(
+                    self.page(
+                        title,
+                        f"""
+                        <section class="page-heading">
+                          <div><p class="page-kicker">即时检查</p><h1>{title}</h1></div>
+                          <a class="button secondary" href="/admin">返回控制台</a>
+                        </section>
+                        <section class="panel console-panel"><pre>{html.escape(output)}</pre></section>
+                        """,
+                    )
+                )
             else:
                 raise ValueError("未知操作。")
         except ValueError as exc:
             if self.path.startswith("/webauthn/"):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
                 return
-            self.send_html(self.page("操作失败", f"<p class='error'>{html.escape(str(exc))}</p><p><a href='/admin'>返回后台</a></p>"), HTTPStatus.BAD_REQUEST)
+            self.send_html(
+                self.page(
+                    "操作失败",
+                    f"""
+                    <section class="page-heading">
+                      <div><p class="page-kicker">请求未完成</p><h1>操作失败</h1></div>
+                      <a class="button secondary" href="/admin">返回控制台</a>
+                    </section>
+                    <p class="notice error-box">{html.escape(str(exc))}</p>
+                    """,
+                ),
+                HTTPStatus.BAD_REQUEST,
+            )
 
     def login_page(self, error: str) -> str:
         error_html = f"<p class='notice error-box'>{html.escape(error)}</p>" if error else ""
         return self.page(
-            "登录",
+            "后台登录",
             f"""
-            {error_html}
             <section class="auth-shell">
-              <div class="hero auth-hero">
-                <div>
-                  <p class="eyebrow">Admin Access</p>
-                  <h2>登录后台</h2>
-                  <p>优先使用 Passkey，备用密钥只用于首次注册或应急登录。</p>
+              <section class="panel auth-panel">
+                <div class="auth-title">
+                  <span class="auth-symbol" aria-hidden="true">P</span>
+                  <p class="page-kicker">安全访问</p>
+                  <h1>监控控制台</h1>
+                  <p>使用 Passkey 登录</p>
                 </div>
-                <a class="button ghost" href="/">查看公开页</a>
-              </div>
-              <div class="auth-grid">
-                <section class="panel primary-panel">
-                  <div class="section-head">
-                    <div>
-                      <p class="eyebrow">Recommended</p>
-                      <h2>Passkey</h2>
-                    </div>
-                    <span class="badge okb">更方便</span>
-                  </div>
-                  <p class="muted">使用设备上的 Touch ID、Face ID、Windows Hello 或安全密钥登录。</p>
-                  <button type="button" id="passkey-login" class="wide-button">使用 Passkey 登录</button>
-                  <p id="passkey-status" class="small muted status-line"></p>
-                </section>
-                <form method="post" action="/login" class="panel">
-                  <div class="section-head">
-                    <div>
-                      <p class="eyebrow">Fallback</p>
-                      <h2>备用密钥</h2>
-                    </div>
-                  </div>
-                  <label>后台备用密钥<input type="password" name="admin_key" autocomplete="current-password" autofocus></label>
-                  <button type="submit" class="wide-button secondary">使用备用密钥登录</button>
-                </form>
-              </div>
+                {error_html}
+                <button type="button" id="passkey-login" class="wide-button auth-primary">继续使用 Passkey</button>
+                <p id="passkey-status" class="small muted status-line"></p>
+                <details class="backup-access">
+                  <summary>使用备用密钥</summary>
+                  <form method="post" action="/login" class="backup-form">
+                    <label>备用密钥<input type="password" name="admin_key" autocomplete="current-password"></label>
+                    <button type="submit" class="wide-button secondary">登录</button>
+                  </form>
+                </details>
+                <a class="auth-back" href="/">返回库存页</a>
+              </section>
             </section>
             """,
         )
@@ -1105,17 +1126,20 @@ class Handler(BaseHTTPRequestHandler):
         latest_check = short_datetime(max(last_checks)) if last_checks else "尚无"
         service_status = self.app.service_status() if admin else ""
         service_badge = ""
+        service_label = ""
         if admin:
-            service_class = "okb" if "active" in service_status else "warn"
-            service_badge = f"<span class='badge {service_class}'>{html.escape(service_status)}</span>"
+            service_ok = "active" in service_status
+            service_class = "okb" if service_ok else "warn"
+            service_label = "正常" if service_ok else "异常"
+            service_badge = f"<span class='badge {service_class}'><i></i>{service_label}</span>"
         summary_class = "summary admin-summary" if admin else "summary public-summary"
         summary = f"""
-        <section class="{summary_class}">
-          <div><span>任务</span><strong>{len(tasks)}</strong>{'<small>正在跟踪</small>' if admin else ''}</div>
-          <div><span>商品</span><strong>{total_products}</strong>{'<small>已解析</small>' if admin else ''}</div>
-          <div><span>有货</span><strong>{total_in_stock}</strong>{'<small>可购买</small>' if admin else ''}</div>
-          <div><span>检查</span><strong>{html.escape(latest_check)}</strong>{'<small>最近一次</small>' if admin else ''}</div>
-          {f"<div><span>服务</span><strong>{service_badge}</strong><small>systemd 运行状态</small></div>" if admin else ""}
+        <section class="{summary_class}" aria-label="库存概览">
+          <div><span>监控任务</span><strong>{len(tasks)}</strong></div>
+          <div><span>商品总数</span><strong>{total_products}</strong></div>
+          <div class="stock-summary"><span>当前有货</span><strong>{total_in_stock}</strong></div>
+          <div><span>最近更新</span><strong class="time-value">{html.escape(latest_check)}</strong></div>
+          {f"<div><span>监控服务</span><strong class='service-value {service_class}'>{service_label}</strong></div>" if admin else ""}
         </section>
         """
         rows = []
@@ -1137,20 +1161,31 @@ class Handler(BaseHTTPRequestHandler):
                     </a>
                     """
                 )
-            stock_html = f"<div class='stock-items'>{''.join(stock_items)}</div>" if stock_items else "<span class='empty-stock'>暂无有货</span>"
-            paused = "<span class='badge warn'>已暂停</span>" if task["paused"] else "<span class='badge okb'>运行中</span>"
+            stock_html = (
+                f"<div class='stock-block-title'>有货商品</div><div class='stock-items'>{''.join(stock_items)}</div>"
+                if stock_items
+                else "<div class='availability-line'><i></i><span>暂未补货</span></div>"
+            )
+            paused = (
+                "<span class='badge warn'><i></i>已暂停</span>"
+                if task["paused"]
+                else "<span class='badge okb'><i></i>监控中</span>"
+            )
             error = f"<div class='task-error'>{html.escape(str(task['last_error']))}</div>" if task["last_error"] else ""
             in_count = len(task["in_stock"])
             total_count = int(task["total"])
             card_class = "card stock-card has-stock" if in_count else "card stock-card"
             admin_metrics = (
                 f"""
+                <details class="task-details">
+                  <summary>任务设置</summary>
                   <dl class="metric-list">
-                    <dt>本月已推送</dt><dd>{task['notified_count']} 个</dd>
+                    <dt>本月提醒</dt><dd>{task['notified_count']} 次</dd>
                     <dt>连续失败</dt><dd>{html.escape(str(task['consecutive_failures']))}</dd>
-                    <dt>校验文本</dt><dd>{html.escape(str(task['require_text'] or '不校验'))}</dd>
-                    <dt>间隔</dt><dd>{html.escape(str(task['interval']))} 秒 + 随机 {html.escape(str(task['jitter']))} 秒</dd>
+                    <dt>标题校验</dt><dd>{html.escape(str(task['require_text'] or '关闭'))}</dd>
+                    <dt>检查周期</dt><dd>{html.escape(str(task['interval']))} 秒，浮动 {html.escape(str(task['jitter']))} 秒</dd>
                   </dl>
+                </details>
                 """
                 if admin
                 else ""
@@ -1161,18 +1196,18 @@ class Handler(BaseHTTPRequestHandler):
                   <div class="card-head">
                     <div>
                       <h2>{html.escape(task['name'])}</h2>
-                      <a class="task-url" href="{html.escape(task['url'])}">来源：{html.escape(short_link_label(task['url']))}</a>
+                      <a class="task-url" href="{html.escape(task['url'])}" target="_blank" rel="noopener">打开分类 <span>{html.escape(short_link_label(task['url']))}</span> ↗</a>
                     </div>
                     {paused}
                   </div>
                   <div class="stock-meter">
                     <div><span>有货</span><strong>{in_count}</strong></div>
-                    <div><span>总数</span><strong>{total_count}</strong></div>
-                    <div><span>检查</span><strong>{html.escape(short_datetime(task['checked_at']))}</strong></div>
+                    <div><span>商品</span><strong>{total_count}</strong></div>
+                    <div><span>更新</span><strong>{html.escape(short_datetime(task['checked_at']))}</strong></div>
                   </div>
                   {admin_metrics}
                   {error if admin else ""}
-                  <div class="stock-block"><strong>当前有货</strong>{stock_html}</div>
+                  <div class="stock-block">{stock_html}</div>
                   {self.task_admin_buttons(task) if admin else ""}
                 </section>
                 """
@@ -1202,24 +1237,29 @@ class Handler(BaseHTTPRequestHandler):
         history_html = f"""
         <section class="panel history-panel">
           <div class="section-head">
-            <div><h2>补货历史</h2><p class="muted">最近记录到的有货变化</p></div>
-            <span class="badge {'okb' if stock_history else 'warn'}">{len(stock_history)} 条</span>
+            <div><p class="section-kicker">库存变化</p><h2>补货记录</h2></div>
+            <span class="count-label">{len(stock_history)} 条</span>
           </div>
-          <div class="history-list">{''.join(history_rows) if history_rows else "<span class='empty-stock'>还没有补货记录</span>"}</div>
+          <div class="history-list">{''.join(history_rows) if history_rows else "<div class='empty-state'><strong>暂无补货记录</strong></div>"}</div>
         </section>
         """
         csrf_field = html.escape(self.csrf_token())
         if not admin:
+            availability_class = "available" if total_in_stock else "quiet"
+            availability_text = f"{total_in_stock} 件有货" if total_in_stock else "暂无补货"
             return self.page(
-                "Fujifilm 库存状态",
+                "Fujifilm 库存监控",
                 f"""
-                <section class="hero compact-hero">
+                <section class="page-heading public-heading">
                   <div>
-                    <h2>Fujifilm 库存</h2>
-                    <p>{total_in_stock} 个有货 · {len(tasks)} 个任务 · {html.escape(latest_check)} 更新</p>
+                    <p class="page-kicker">FUJIFILM MALL</p>
+                    <h1>库存监控</h1>
+                    <p>更新于 {html.escape(latest_check)}</p>
                   </div>
+                  <span class="availability-status {availability_class}"><i></i>{availability_text}</span>
                 </section>
                 {summary}
+                <div class="section-title"><div><p class="section-kicker">实时状态</p><h2>监控列表</h2></div></div>
                 <section class="task-grid public-task-grid">{''.join(rows) or "<p class='muted'>还没有公开库存数据。</p>"}</section>
                 {history_html}
                 """,
@@ -1227,103 +1267,91 @@ class Handler(BaseHTTPRequestHandler):
         notifications = self.app.notification_settings()
         notification_count = sum(1 for value in notifications.values() if value)
         notification_badge = (
-            f"<span class='badge okb'>{notification_count} 个已启用</span>"
+            f"<span class='badge okb'>已启用 {notification_count} 个</span>"
             if notification_count
             else "<span class='badge warn'>未配置</span>"
         )
         return self.page(
-            "Fujifilm 后台管理",
+            "Fujifilm 监控控制台",
             f"""
             {msg_html}
-            <section class="hero">
+            <section class="page-heading admin-heading">
               <div>
-                <p class="eyebrow">Admin Console</p>
-                <h2>后台管理</h2>
-                <p>先看状态，再做操作。常用操作集中在下面的工具栏里。</p>
+                <p class="page-kicker">管理中心</p>
+                <h1>监控控制台</h1>
+                <p>{len(tasks)} 个任务 · 更新于 {html.escape(latest_check)}</p>
               </div>
-              <div class="hero-actions">
-                <a class="button ghost" href="/">公开页</a>
-                <a class="button secondary" href="/logout">退出登录</a>
+              <div class="page-actions">
+                <a class="button secondary" href="/">库存页</a>
+                <a class="text-action" href="/logout">退出</a>
               </div>
             </section>
             {summary}
             <section class="panel toolbar-panel">
               <div class="section-head">
-                <div>
-                  <h2>常用操作</h2>
-                  <p class="muted">检查库存、查看日志或控制后台服务。</p>
-                </div>
+                <div><p class="section-kicker">运行状态</p><h2>服务控制</h2></div>
                 {service_badge}
               </div>
               <form method="post" class="action-bar">
                 <input type="hidden" name="auth_token" value="{csrf_field}">
                 <button name="action" value="check">立即检查</button>
-                <a class="button" href="/logs">查看日志</a>
+                <a class="button secondary" href="/logs">运行日志</a>
                 <button name="action" value="restart" class="secondary">重启服务</button>
                 <button name="action" value="stop" class="danger-light">暂停服务</button>
-                <button name="action" value="start" class="success">恢复服务</button>
+                <button name="action" value="start" class="success-light">恢复服务</button>
               </form>
             </section>
             <section class="admin-grid">
-            <section class="panel">
+            <section class="panel add-panel">
               <div class="section-head">
-                <div>
-                  <h2>添加监控</h2>
-                  <p class="muted">粘贴 Fujifilm 商品页或分类页链接即可。</p>
-                </div>
+                <div><p class="section-kicker">任务配置</p><h2>新建监控</h2></div>
               </div>
-              <form method="post">
+              <form method="post" class="form-grid">
                 <input type="hidden" name="auth_token" value="{csrf_field}">
                 <input type="hidden" name="action" value="add">
-                <label>商品或分类链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/g/g16587294/" required></label>
-                <label>名称<input name="name" placeholder="可选，例如 MINI13"></label>
-                <label>分类标题校验<input name="require_text" placeholder="留空表示不校验"></label>
-                <label>检查间隔秒数<input name="interval" inputmode="numeric" placeholder="默认"></label>
-                <label>随机延迟秒数<input name="jitter" inputmode="numeric" placeholder="默认"></label>
-                <label>推送策略
+                <label class="full-field">Fujifilm 链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/c/..." required></label>
+                <label>任务名称<input name="name" placeholder="例如 MINI 99"></label>
+                <label>分类标题<input name="require_text" placeholder="可选"></label>
+                <label>检查间隔<input type="number" min="600" step="60" name="interval" inputmode="numeric" placeholder="3600 秒"></label>
+                <label>随机延迟<input type="number" min="0" step="60" name="jitter" inputmode="numeric" placeholder="600 秒"></label>
+                <label class="full-field">补货后
                   <select name="policy">
-                    <option value="monthly">每款每月最多一次</option>
-                    <option value="stop">首次补货后停止任务</option>
-                    <option value="none">不做去重/停止</option>
+                    <option value="monthly">每款商品每月提醒一次</option>
+                    <option value="stop">提醒后永久停止</option>
+                    <option value="none">每次补货都提醒</option>
                   </select>
                 </label>
-                <button type="submit" class="wide-button">开始监控</button>
+                <button type="submit" class="wide-button full-field">添加任务</button>
               </form>
             </section>
-            <section class="panel">
+            <section class="panel push-panel">
               <div class="section-head">
-                <div>
-                  <h2>推送服务</h2>
-                  <p class="muted">补货、失败报警和测试推送都会使用这里的渠道。</p>
-                </div>
+                <div><p class="section-kicker">消息通知</p><h2>推送渠道</h2></div>
                 {notification_badge}
               </div>
               <form method="post" class="settings-form">
                 <input type="hidden" name="auth_token" value="{csrf_field}">
                 <input type="hidden" name="action" value="save-notifications">
-                <label>Server 酱 SendKey<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SCT..."></label>
-                <label>ntfy 主题或 URL<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="例如 fujifilm-stock 或 https://ntfy.sh/..."></label>
+                <label>Server 酱<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SendKey"></label>
+                <label>ntfy<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="主题或 URL"></label>
                 <label>Webhook URL<input name="webhook_url" value="{html.escape(notifications['webhook_url'])}" placeholder="https://example.com/webhook"></label>
-                <button type="submit" class="wide-button">保存推送设置</button>
+                <button type="submit" class="wide-button">保存渠道</button>
               </form>
               <form method="post" class="inline-actions">
                 <input type="hidden" name="auth_token" value="{csrf_field}">
-                <button name="action" value="test-notifications" class="secondary wide-button">发送测试推送</button>
+                <button name="action" value="test-notifications" class="secondary wide-button">发送测试</button>
               </form>
             </section>
-            <section class="panel">
+            <section class="panel passkey-panel">
               <div class="section-head">
-                <div>
-                  <h2>Passkey</h2>
-                  <p class="muted">把当前设备注册为后台 Passkey。</p>
-                </div>
-                <span class="badge okb">推荐</span>
+                <div><p class="section-kicker">安全访问</p><h2>登录设备</h2></div>
+                <span class="count-label">Passkey</span>
               </div>
-              <button type="button" id="passkey-register" class="wide-button">注册此设备</button>
+              <button type="button" id="passkey-register" class="wide-button secondary">添加当前设备</button>
               <p id="passkey-status" class="small muted status-line"></p>
             </section>
             </section>
-            <div class="section-title"><h2>监控任务</h2><p class="muted">每张卡片都可以单独清空本月去重或删除。</p></div>
+            <div class="section-title"><div><p class="section-kicker">运行任务</p><h2>监控任务</h2></div><span class="count-label">{len(tasks)} 个</span></div>
             <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}</section>
             {history_html}
             """,
@@ -1333,11 +1361,11 @@ class Handler(BaseHTTPRequestHandler):
         csrf_field = html.escape(self.csrf_token())
         index = html.escape(str(task["index"]))
         return f"""
-        <form method="post" class="inline-actions" data-confirm-danger="删除任务后需要重新添加，确定继续吗？">
+        <form method="post" class="task-actions" data-confirm-danger="删除后需要重新添加。确认删除此任务？">
           <input type="hidden" name="auth_token" value="{csrf_field}">
           <input type="hidden" name="index" value="{index}">
-          <button name="action" value="clear-notified" class="secondary">清空本月去重</button>
-          <button name="action" value="delete" class="danger">删除任务</button>
+          <button name="action" value="clear-notified" class="secondary">重置本月提醒</button>
+          <button name="action" value="delete" class="danger-link">删除</button>
         </form>
         """
 
@@ -1349,94 +1377,201 @@ class Handler(BaseHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
   <style>
-    :root {{ color-scheme: light; --bg: #f4f6f8; --panel: #ffffff; --ink: #17202a; --muted: #64748b; --line: #d8dee8; --blue: #1463ff; --blue-strong: #0b4cc4; --green: #12805c; --red: #b42318; --amber: #a15c00; }}
+    :root {{ color-scheme: light; --bg: #f5f6f7; --panel: #ffffff; --ink: #171a1f; --muted: #69717d; --line: #dfe2e6; --line-strong: #c7ccd3; --blue: #1769e0; --blue-strong: #1057bd; --green: #087a57; --green-soft: #e8f5ef; --red: #bd1e2d; --red-soft: #fff0f1; --amber: #8a5a00; --amber-soft: #fff5d8; }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; overflow-x: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }}
-    header {{ background: #111827; color: white; padding: 18px max(20px, calc((100% - 1120px) / 2)); border-bottom: 4px solid #2f80ed; }}
-    main {{ max-width: 1120px; margin: 0 auto; padding: 22px 20px 34px; display: grid; gap: 18px; }}
-    h1 {{ margin: 0; font-size: 23px; }} h2 {{ margin: 0; font-size: 18px; }} p {{ line-height: 1.55; }}
-    .panel, .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }}
-    .hero {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; background: #17202a; color: white; border-radius: 8px; padding: 20px; }}
-    .compact-hero {{ padding: 16px 18px; }}
-    .hero h2 {{ margin: 2px 0 6px; font-size: 24px; }} .compact-hero h2 {{ margin: 0; font-size: 22px; }} .hero p {{ margin: 0; color: #d7dde8; }}
-    .hero-actions, .action-bar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }}
-    .eyebrow {{ margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #86b7ff !important; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }}
+    html {{ background: var(--bg); }}
+    body {{ min-width: 320px; min-height: 100vh; margin: 0; overflow-x: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; background: var(--bg); color: var(--ink); font-size: 15px; }}
+    a {{ color: var(--blue); }}
+    button, input, select {{ font: inherit; }}
+    header {{ height: 62px; display: flex; align-items: center; background: #fff; border-bottom: 1px solid var(--line); }}
+    .topbar {{ width: min(1160px, calc(100% - 48px)); margin: 0 auto; }}
+    .brand {{ width: fit-content; display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 760; }}
+    .brand-mark {{ width: 5px; height: 25px; background: var(--red); }}
+    .brand-name {{ font-size: 18px; }}
+    .brand-product {{ padding-left: 10px; border-left: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; font-weight: 650; }}
+    main {{ width: min(1160px, calc(100% - 48px)); margin: 0 auto; padding: 38px 0 60px; display: grid; gap: 24px; }}
+    h1, h2, p {{ margin-top: 0; }}
+    h1 {{ margin-bottom: 7px; font-size: 32px; line-height: 1.2; font-weight: 740; }}
+    h2 {{ margin: 0; font-size: 18px; line-height: 1.3; font-weight: 720; }}
+    p {{ line-height: 1.55; }}
+    .page-heading {{ min-height: 82px; display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 4px; }}
+    .page-heading > div:first-child {{ min-width: 0; }}
+    .page-heading p:last-child {{ margin: 0; color: var(--muted); font-size: 14px; }}
+    .page-kicker, .section-kicker {{ margin: 0 0 6px; color: var(--red); font-size: 11px; font-weight: 760; text-transform: uppercase; letter-spacing: 0; }}
+    .page-actions {{ display: flex; align-items: center; gap: 16px; padding-bottom: 4px; }}
+    .text-action, .auth-back {{ color: var(--muted); font-size: 14px; text-decoration: none; }}
+    .text-action:hover, .auth-back:hover {{ color: var(--ink); }}
+    .availability-status {{ display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px; background: #fff; color: #505866; font-size: 13px; font-weight: 680; white-space: nowrap; }}
+    .availability-status i, .badge i, .availability-line i {{ width: 7px; height: 7px; border-radius: 50%; background: #8b929c; }}
+    .availability-status.available {{ border-color: #a8d7c4; color: #075f45; background: var(--green-soft); }}
+    .availability-status.available i, .okb i {{ background: var(--green); }}
+    .panel, .card {{ min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
+    .panel {{ padding: 20px; }}
+    .card {{ padding: 19px; }}
+    .summary {{ display: grid; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
     .public-summary {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
-    .summary div {{ background: white; border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; min-width: 0; }}
-    .summary span {{ display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }}
-    .summary strong {{ display: block; font-size: 20px; overflow-wrap: anywhere; line-height: 1.15; }}
-    .public-summary strong {{ font-size: 24px; }}
-    .summary small {{ display: block; color: var(--muted); margin-top: 6px; font-size: 12px; }}
-    .admin-grid, .auth-grid {{ display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .85fr); gap: 18px; align-items: start; }}
-    .auth-shell {{ display: grid; gap: 18px; }} .auth-hero {{ min-height: 150px; }}
-    .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }}
+    .admin-summary {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+    .summary div {{ min-width: 0; padding: 17px 20px; border-right: 1px solid var(--line); }}
+    .summary div:last-child {{ border-right: 0; }}
+    .summary span {{ display: block; margin-bottom: 7px; color: var(--muted); font-size: 12px; }}
+    .summary strong {{ display: block; font-size: 26px; line-height: 1.1; font-weight: 730; overflow-wrap: anywhere; }}
+    .summary .time-value {{ font-size: 19px; }}
+    .summary .service-value {{ width: fit-content; font-size: 18px; }}
+    .summary .service-value.okb {{ color: var(--green); }}
+    .summary .service-value.warn {{ color: var(--amber); }}
+    .stock-summary strong {{ color: var(--green); }}
+    .section-title, .section-head, .card-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }}
+    .section-title {{ align-items: flex-end; margin-top: 4px; }}
+    .section-head, .card-head {{ margin-bottom: 18px; }}
+    .count-label {{ color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }}
+    .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }}
     .public-task-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
-    .card-head, .section-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }}
-    .stock-card {{ display: grid; gap: 14px; align-content: start; }}
+    .stock-card {{ display: grid; gap: 16px; align-content: start; }}
+    .stock-card.has-stock {{ border-color: #9ccfba; box-shadow: inset 0 3px 0 var(--green); }}
     .stock-card .card-head {{ margin-bottom: 0; }}
-    .stock-card.has-stock {{ border-color: #9ad8ae; box-shadow: 0 0 0 3px rgba(18,128,92,.08); }}
-    .task-url {{ display: inline-flex; width: fit-content; margin-top: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; color: #475467; font-size: 12px; text-decoration: none; background: #f8fafc; }}
-    .task-url:hover {{ border-color: #b8c0cc; background: #eef4ff; color: #0b4cc4; }}
-    form {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }}
-    label {{ display: grid; gap: 6px; flex: 1 1 240px; font-size: 14px; color: #374151; }}
-    input, select {{ width: 100%; border: 1px solid #b8c0cc; border-radius: 6px; padding: 11px 12px; font-size: 15px; background: white; }}
-    input:focus, select:focus {{ outline: 3px solid rgba(20, 99, 255, .18); border-color: var(--blue); }}
-    button, .button {{ display: inline-flex; align-items: center; justify-content: center; min-height: 40px; border: 0; border-radius: 6px; background: var(--blue); color: white; padding: 10px 14px; font-size: 14px; font-weight: 650; text-decoration: none; cursor: pointer; }}
-    button:hover, .button:hover {{ background: var(--blue-strong); }}
-    .secondary {{ background: #475467; }} .secondary:hover {{ background: #344054; }}
-    .ghost {{ background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.24); }} .ghost:hover {{ background: rgba(255,255,255,.22); }}
-    .success {{ background: var(--green); }} .success:hover {{ background: #0f684d; }}
-    .danger, button[value="delete"] {{ background: var(--red); }} .danger:hover, button[value="delete"]:hover {{ background: #8f1c13; }}
-    .danger-light {{ background: #fff1ef; color: var(--red); border: 1px solid #f4b8b0; }} .danger-light:hover {{ background: #ffe4e0; }}
-    .wide-button {{ width: 100%; }}
-    .inline-actions {{ margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--line); }}
-    .toolbar-panel form {{ margin-top: 12px; }}
-    .public-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
-    a {{ color: #0969da; word-break: break-all; }} .metric-list {{ display: grid; grid-template-columns: 112px 1fr; gap: 8px 12px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line); }}
-    dt {{ color: #5f6b7a; }} dd {{ margin: 0; min-width: 0; }}
-    pre {{ white-space: pre-wrap; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 14px; overflow: auto; }}
-    .badge {{ display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 4px 9px; font-size: 13px; white-space: nowrap; }} .warn {{ background: #fff0c2; color: #7a4b00; }} .okb {{ background: #dff8e7; color: #116329; }}
-    .notice {{ margin: 0; padding: 12px 14px; border-radius: 8px; }} .ok {{ background: #dff8e7; border: 1px solid #9ad8ae; }} .error, .error-box {{ color: var(--red); }} .error-box {{ background: #fff1ef; border: 1px solid #f4b8b0; }}
-    .task-error {{ margin: 12px 0; color: var(--red); background: #fff1ef; border: 1px solid #f4b8b0; border-radius: 8px; padding: 10px; font-size: 13px; }}
-    .stock-meter {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }}
-    .stock-meter div {{ border-radius: 8px; background: #f8fafc; border: 1px solid #edf1f7; padding: 10px; min-width: 0; }}
-    .stock-meter span {{ display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }}
-    .stock-meter strong {{ display: block; font-size: 18px; line-height: 1.15; overflow-wrap: anywhere; }}
-    .has-stock .stock-meter div:first-child {{ background: #eaf8ef; border-color: #bee8cc; color: #116329; }}
-    .stock-block {{ display: grid; gap: 8px; }}
-    .stock-block > strong {{ font-size: 14px; }}
-    .stock-items {{ display: grid; gap: 8px; }}
-    .stock-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 60px; padding: 8px; border: 1px solid #d8e6fa; border-radius: 7px; background: #f8fbff; color: var(--ink); text-decoration: none; }}
-    .stock-item:hover {{ border-color: #8db8ef; background: #eef6ff; }}
-    .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid #e4e9f0; border-radius: 5px; background: white; }}
+    .task-url {{ display: inline-flex; align-items: center; gap: 5px; width: fit-content; margin-top: 7px; color: var(--muted); font-size: 12px; text-decoration: none; }}
+    .task-url span {{ color: #8a919b; }}
+    .task-url:hover, .task-url:hover span {{ color: var(--blue); }}
+    .badge {{ display: inline-flex; align-items: center; gap: 7px; min-height: 26px; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 680; white-space: nowrap; }}
+    .badge.okb {{ background: var(--green-soft); color: #075f45; }}
+    .badge.warn {{ background: var(--amber-soft); color: var(--amber); }}
+    .badge.warn i {{ background: #b57900; }}
+    .stock-meter {{ display: grid; grid-template-columns: 72px 72px minmax(0, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }}
+    .stock-meter div {{ min-width: 0; padding: 12px 10px 12px 0; }}
+    .stock-meter div + div {{ padding-left: 12px; border-left: 1px solid var(--line); }}
+    .stock-meter span {{ display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; }}
+    .stock-meter strong {{ display: block; font-size: 16px; line-height: 1.2; font-weight: 720; overflow-wrap: anywhere; }}
+    .has-stock .stock-meter div:first-child strong {{ color: var(--green); }}
+    .stock-block {{ min-width: 0; }}
+    .stock-block-title {{ margin-bottom: 7px; font-size: 12px; font-weight: 700; }}
+    .availability-line {{ min-height: 36px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }}
+    .stock-items {{ display: grid; }}
+    .stock-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 62px; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ink); text-decoration: none; }}
+    .stock-item:last-child {{ border-bottom: 1px solid var(--line); }}
+    .stock-item:hover {{ color: var(--blue); }}
+    .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: #fff; }}
     .product-thumb img {{ width: 100%; height: 100%; object-fit: contain; }}
-    .product-placeholder {{ color: #64748b; font-size: 10px; }}
-    .product-copy {{ min-width: 0; display: grid; gap: 3px; }}
-    .product-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }}
-    .product-copy small {{ color: #52606f; font-size: 12px; }}
-    .open-mark {{ color: #0b4cc4; font-size: 16px; }}
+    .product-placeholder {{ color: var(--muted); font-size: 10px; }}
+    .product-copy, .history-copy {{ min-width: 0; display: grid; gap: 3px; }}
+    .product-copy strong, .history-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }}
+    .product-copy small, .history-copy small, .history-item time {{ color: var(--muted); font-size: 12px; }}
+    .open-mark {{ color: var(--blue); font-size: 15px; }}
+    .task-details {{ margin-top: -2px; color: var(--muted); font-size: 12px; }}
+    .task-details summary, .backup-access summary {{ width: fit-content; cursor: pointer; color: var(--muted); }}
+    .task-details summary:hover, .backup-access summary:hover {{ color: var(--ink); }}
+    .metric-list {{ display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; margin: 12px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line); }}
+    dt {{ color: var(--muted); }}
+    dd {{ min-width: 0; margin: 0; color: #3d444e; overflow-wrap: anywhere; }}
     .history-panel {{ padding: 0; overflow: hidden; }}
-    .history-panel .section-head {{ padding: 16px 18px; margin: 0; border-bottom: 1px solid var(--line); }}
+    .history-panel .section-head {{ align-items: center; margin: 0; padding: 18px 20px; border-bottom: 1px solid var(--line); }}
     .history-list {{ display: grid; }}
-    .history-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 18px; color: var(--ink); text-decoration: none; border-bottom: 1px solid #edf1f5; }}
+    .history-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 20px; color: var(--ink); text-decoration: none; border-bottom: 1px solid #eceef1; }}
     .history-item:last-child {{ border-bottom: 0; }}
-    .history-item:hover {{ background: #f8fbff; }}
-    .history-copy {{ min-width: 0; display: grid; gap: 3px; }}
-    .history-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }}
-    .history-copy small, .history-item time {{ color: var(--muted); font-size: 12px; }}
+    .history-item:hover {{ background: #f8f9fa; }}
     .history-item time {{ white-space: nowrap; }}
-    .empty-stock {{ color: var(--muted); background: #f8fafc; border: 1px dashed #cfd7e3; border-radius: 8px; padding: 12px; text-align: center; }}
-    .section-title {{ display: flex; justify-content: space-between; align-items: end; gap: 12px; flex-wrap: wrap; }}
-    .section-title p, .section-head p {{ margin: 4px 0 0; }}
-    .small {{ margin-top: 8px; font-size: 13px; }} .status-line {{ min-height: 18px; }}
+    .empty-state {{ min-height: 104px; display: grid; place-content: center; gap: 5px; text-align: center; color: var(--muted); }}
+    .empty-state strong {{ color: #4d5561; font-size: 14px; }}
+    .empty-state span {{ font-size: 12px; }}
+    form {{ margin: 0; }}
+    label {{ display: grid; gap: 7px; min-width: 0; color: #3e454f; font-size: 12px; font-weight: 670; }}
+    input, select {{ width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px 11px; background: #fff; color: var(--ink); font-size: 14px; }}
+    input::placeholder {{ color: #969da7; }}
+    input:focus, select:focus {{ outline: 3px solid rgba(23, 105, 224, .13); border-color: var(--blue); }}
+    button, .button {{ min-height: 40px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 5px; padding: 9px 14px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; }}
+    button:hover, .button:hover {{ border-color: var(--blue-strong); background: var(--blue-strong); }}
+    .secondary {{ border-color: var(--line-strong); background: #fff; color: #353c46; }}
+    .secondary:hover {{ border-color: #9da4ad; background: #f4f5f6; color: var(--ink); }}
+    .danger-light {{ border-color: #e4aab0; background: #fff; color: var(--red); }}
+    .danger-light:hover {{ border-color: var(--red); background: var(--red-soft); }}
+    .success-light {{ border-color: #9bcbb8; background: #fff; color: var(--green); }}
+    .success-light:hover {{ border-color: var(--green); background: var(--green-soft); }}
+    .danger-link {{ min-height: 36px; border-color: transparent; background: transparent; color: var(--red); }}
+    .danger-link:hover {{ border-color: transparent; background: var(--red-soft); }}
+    .wide-button {{ width: 100%; }}
+    .action-bar, .task-actions {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
+    .toolbar-panel .section-head {{ align-items: center; }}
+    .admin-grid {{ display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(300px, .85fr); gap: 16px; align-items: start; }}
+    .passkey-panel {{ grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: center; gap: 6px 20px; }}
+    .passkey-panel .section-head {{ grid-column: 1; grid-row: 1 / span 2; margin: 0; }}
+    .passkey-panel .wide-button, .passkey-panel .status-line {{ grid-column: 2; }}
+    .passkey-panel .status-line {{ margin: 0; }}
+    .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+    .full-field {{ grid-column: 1 / -1; }}
+    .settings-form {{ display: grid; gap: 12px; }}
+    .inline-actions {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }}
+    .task-actions {{ padding-top: 4px; }}
+    .task-actions .secondary, .task-actions .danger-link {{ flex: 1 1 auto; }}
+    .notice {{ margin: 0; padding: 12px 14px; border: 1px solid; border-radius: 5px; font-size: 13px; }}
+    .notice.ok {{ border-color: #a8d7c4; background: var(--green-soft); color: #075f45; }}
+    .error, .error-box {{ color: var(--red); }}
+    .error-box {{ border-color: #e6b0b5; background: var(--red-soft); }}
+    .task-error {{ margin: 0; padding: 10px 11px; border-left: 3px solid var(--red); background: var(--red-soft); color: var(--red); font-size: 12px; }}
+    .auth-shell {{ width: min(440px, 100%); margin: 38px auto 0; }}
+    .auth-panel {{ padding: 28px; }}
+    .auth-title {{ display: grid; justify-items: center; margin-bottom: 24px; text-align: center; }}
+    .auth-title h1 {{ margin-bottom: 6px; font-size: 27px; }}
+    .auth-title > p:last-child {{ margin: 0; color: var(--muted); font-size: 14px; }}
+    .auth-symbol {{ width: 44px; height: 44px; display: grid; place-items: center; margin-bottom: 18px; border: 1px solid #282d34; border-bottom: 4px solid var(--red); border-radius: 5px; background: #20242a; color: #fff; font-size: 18px; font-weight: 800; }}
+    .auth-primary {{ min-height: 46px; }}
+    .backup-access {{ margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; }}
+    .backup-form {{ display: grid; gap: 12px; margin-top: 14px; }}
+    .auth-back {{ display: block; width: fit-content; margin: 22px auto 0; }}
+    .small {{ margin: 8px 0 0; font-size: 12px; }}
+    .status-line {{ min-height: 17px; text-align: center; }}
+    .console-panel {{ padding: 0; overflow: hidden; }}
+    pre {{ max-height: 70vh; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; background: #20242a; color: #eef0f3; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }}
     .muted {{ color: var(--muted); }}
-    @media (max-width: 900px) {{ .public-summary, .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
-    @media (max-width: 760px) {{ main {{ padding: 16px 12px 28px; }} .admin-grid, .auth-grid, .public-summary, .task-grid, .public-task-grid {{ grid-template-columns: 1fr; }} .metric-list {{ grid-template-columns: 1fr; }} button, .button {{ width: 100%; }} .hero {{ align-items: stretch; }} .hero-actions {{ width: 100%; }} .stock-meter {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }} .history-item {{ grid-template-columns: 40px minmax(0, 1fr); }} .history-item time {{ grid-column: 2; }} }}
+    @media (max-width: 940px) {{
+      .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .admin-summary {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+      .admin-summary div:nth-child(3) {{ border-right: 0; }}
+      .admin-summary div:nth-child(n+4) {{ border-top: 1px solid var(--line); }}
+      .admin-grid {{ grid-template-columns: 1fr; }}
+      .passkey-panel {{ grid-column: auto; grid-template-columns: 1fr; }}
+      .passkey-panel .section-head, .passkey-panel .wide-button, .passkey-panel .status-line {{ grid-column: 1; grid-row: auto; }}
+    }}
+    @media (max-width: 680px) {{
+      header {{ height: 56px; }}
+      .topbar, main {{ width: calc(100% - 28px); }}
+      .brand-product {{ display: none; }}
+      main {{ padding: 26px 0 42px; gap: 18px; }}
+      h1 {{ font-size: 27px; }}
+      .page-heading {{ min-height: 72px; align-items: flex-start; }}
+      .page-heading p:last-child {{ overflow-wrap: anywhere; }}
+      .page-heading, .section-title {{ flex-wrap: wrap; }}
+      .page-actions {{ width: 100%; justify-content: space-between; }}
+      .public-summary, .admin-summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .summary div {{ padding: 14px; border-bottom: 1px solid var(--line); }}
+      .summary div:nth-child(2n) {{ border-right: 0; }}
+      .summary div:nth-last-child(-n+2) {{ border-bottom: 0; }}
+      .admin-summary div:nth-child(3) {{ border-right: 1px solid var(--line); }}
+      .admin-summary div:nth-child(n+4) {{ border-top: 0; }}
+      .admin-summary div:last-child {{ grid-column: 1 / -1; border-top: 1px solid var(--line); border-right: 0; }}
+      .summary strong {{ font-size: 23px; }}
+      .summary .time-value {{ font-size: 17px; }}
+      .task-grid, .public-task-grid, .form-grid {{ grid-template-columns: 1fr; }}
+      .full-field {{ grid-column: auto; }}
+      .stock-meter {{ grid-template-columns: 64px 64px minmax(0, 1fr); }}
+      .action-bar {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .action-bar > * {{ width: 100%; }}
+      .history-item {{ grid-template-columns: 40px minmax(0, 1fr); padding: 10px 14px; }}
+      .history-item time {{ grid-column: 2; }}
+      .product-thumb {{ width: 40px; height: 40px; }}
+      .auth-shell {{ margin-top: 12px; }}
+      .auth-panel {{ padding: 24px 20px; }}
+    }}
   </style>
 </head>
 <body>
-  <header><h1>{html.escape(title)}</h1></header>
+  <header>
+    <div class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">FUJIFILM</span>
+        <span class="brand-product">STOCK MONITOR</span>
+      </a>
+    </div>
+  </header>
   <main>{body}</main>
   <script src="/app.js"></script>
 </body>
@@ -1469,9 +1604,9 @@ function setPasskeyStatus(text, isError) {
 async function passkeyLogin() {
   try {
     if (!window.PublicKeyCredential) throw new Error("当前浏览器不支持 Passkey。");
-    setPasskeyStatus("正在请求 Passkey...", false);
+    setPasskeyStatus("正在验证...", false);
     const options = await (await fetch("/webauthn/login/options")).json();
-    if (!options.hasCredentials) throw new Error("还没有注册 Passkey，请先用备用密钥登录后台注册。");
+    if (!options.hasCredentials) throw new Error("尚未添加 Passkey，请使用备用密钥登录。");
     const publicKey = options.publicKey;
     publicKey.challenge = b64ToBuf(publicKey.challenge);
     publicKey.allowCredentials = publicKey.allowCredentials.map((item) => ({...item, id: b64ToBuf(item.id)}));
@@ -1501,7 +1636,7 @@ async function passkeyLogin() {
 async function passkeyRegister() {
   try {
     if (!window.PublicKeyCredential) throw new Error("当前浏览器不支持 Passkey。");
-    setPasskeyStatus("正在创建 Passkey...", false);
+    setPasskeyStatus("正在添加设备...", false);
     const options = await (await fetch("/webauthn/register/options", {method: "POST"})).json();
     const publicKey = options.publicKey;
     publicKey.challenge = b64ToBuf(publicKey.challenge);
@@ -1523,7 +1658,7 @@ async function passkeyRegister() {
       body: JSON.stringify(payload)
     })).json();
     if (!result.ok) throw new Error(result.error || "Passkey 注册失败。");
-    setPasskeyStatus("Passkey 已注册。下次可以直接用 Passkey 登录。", false);
+    setPasskeyStatus("设备已添加。", false);
   } catch (error) {
     setPasskeyStatus(error.message || String(error), true);
   }
