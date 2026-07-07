@@ -202,6 +202,13 @@ class WebTests(unittest.TestCase):
                 "https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg",
             )
 
+    def test_proxied_image_url_only_allows_fujifilm_images(self) -> None:
+        self.assertEqual(
+            web.proxied_image_url("https://mall-jp.fujifilm.com/img/goods/S/16587294.jpg"),
+            "/image?u=https%3A%2F%2Fmall-jp.fujifilm.com%2Fimg%2Fgoods%2FS%2F16587294.jpg",
+        )
+        self.assertEqual(web.proxied_image_url("https://example.com/image.jpg"), "")
+
     def test_admin_key_hash_verification(self) -> None:
         encoded = web.make_admin_key_hash("open sesame")
         self.assertTrue(web.verify_admin_key_hash("open sesame", encoded))

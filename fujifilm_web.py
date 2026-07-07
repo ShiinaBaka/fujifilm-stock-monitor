@@ -115,6 +115,13 @@ def trusted_image_url(url: object) -> str:
     return ""
 
 
+def proxied_image_url(url: object) -> str:
+    trusted = trusted_image_url(url)
+    if not trusted:
+        return ""
+    return "/image?u=" + urllib.parse.quote(trusted, safe="")
+
+
 def fallback_product_image_url(url: str) -> str:
     match = re.search(r"/shop/g/g(\d+)/?", urllib.parse.urlparse(url).path)
     return f"https://{FUJIFILM_HOST}/img/goods/S/{match.group(1)}.jpg" if match else ""
@@ -897,6 +904,45 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def send_image_proxy(self, image_url: str) -> None:
+        url = trusted_image_url(image_url)
+        if not url:
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            return
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 FujifilmStockMonitor/1.0",
+                "Referer": f"https://{FUJIFILM_HOST}/",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                content_type = response.headers.get_content_type()
+                if not content_type.startswith("image/"):
+                    raise ValueError("unexpected image content type")
+                data = response.read(4 * 1024 * 1024 + 1)
+                if len(data) > 4 * 1024 * 1024:
+                    raise ValueError("image too large")
+        except (OSError, ValueError):
+            data = (
+                b'<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">'
+                b'<rect width="96" height="96" rx="10" fill="#f4f5f6"/>'
+                b'<path d="M28 58h40L57 43 48 54l-7-8-13 12Z" fill="#c7ccd3"/>'
+                b'<circle cx="35" cy="35" r="6" fill="#c7ccd3"/>'
+                b'</svg>'
+            )
+            content_type = "image/svg+xml"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
     def redirect(self, location: str) -> None:
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
@@ -933,6 +979,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/app.js":
             self.send_javascript(self.app_script())
+            return
+        if parsed.path == "/image":
+            image_url = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
+            self.send_image_proxy(image_url)
             return
         if parsed.path == "/webauthn/login/options":
             self.send_json(self.app.passkey_login_options(self.headers.get("Host", "")))
@@ -1147,9 +1197,10 @@ class Handler(BaseHTTPRequestHandler):
         for task in tasks:
             stock_items = []
             for product in task["in_stock"]:
+                product_image = proxied_image_url(product["image_url"])
                 image_html = (
-                    f"<img src='{html.escape(product['image_url'])}' alt='' loading='lazy' decoding='async'>"
-                    if product["image_url"]
+                    f"<img src='{html.escape(product_image)}' alt='' loading='lazy' decoding='async' onerror='this.remove()'>"
+                    if product_image
                     else "<span class='product-placeholder' aria-hidden='true'>商品</span>"
                 )
                 price_html = f"<small>{html.escape(product['price'])}</small>" if product["price"] else ""
@@ -1236,9 +1287,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         history_rows = []
         for item in stock_history:
+            history_image = proxied_image_url(item["image_url"])
             image_html = (
-                f"<img src='{html.escape(item['image_url'])}' alt='' loading='lazy' decoding='async'>"
-                if item["image_url"]
+                f"<img src='{html.escape(history_image)}' alt='' loading='lazy' decoding='async' onerror='this.remove()'>"
+                if history_image
                 else "<span class='product-placeholder' aria-hidden='true'>商品</span>"
             )
             meta = html.escape(item["task"])
@@ -1279,7 +1331,7 @@ class Handler(BaseHTTPRequestHandler):
                   </div>
                   <span class="availability-status {availability_class}"><i></i>{availability_text}</span>
                 </section>
-                <section class="panel monitor-list">{''.join(rows) or "<div class='empty-state'><strong>暂无监控任务</strong></div>"}</section>
+                <section class="monitor-grid">{''.join(rows) or "<div class='panel empty-state'><strong>暂无监控任务</strong></div>"}</section>
                 {history_html if stock_history else ""}
                 """,
             )
@@ -1461,15 +1513,15 @@ class Handler(BaseHTTPRequestHandler):
     .section-title {{ align-items: flex-end; margin-top: 4px; }}
     .section-head, .card-head {{ margin-bottom: 18px; }}
     .count-label {{ color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }}
-    .monitor-list {{ padding: 0; overflow: hidden; }}
-    .monitor-row {{ display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; padding: 17px 20px; border-bottom: 1px solid var(--line); }}
-    .monitor-row:last-child {{ border-bottom: 0; }}
-    .monitor-row.available {{ box-shadow: inset 3px 0 0 var(--green); }}
+    .monitor-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 14px; }}
+    .monitor-grid > .empty-state {{ grid-column: 1 / -1; }}
+    .monitor-row {{ min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
+    .monitor-row.available {{ border-color: #9ccfba; box-shadow: inset 0 3px 0 var(--green); }}
     .monitor-identity {{ min-width: 0; }}
     .monitor-identity h2 {{ font-size: 16px; }}
-    .monitor-state {{ min-width: 160px; display: grid; justify-items: end; gap: 4px; text-align: right; }}
+    .monitor-state {{ min-width: 0; display: grid; justify-items: end; gap: 4px; text-align: right; }}
     .monitor-state strong {{ font-size: 14px; }}
-    .monitor-state small {{ color: var(--muted); font-size: 12px; white-space: nowrap; }}
+    .monitor-state small {{ max-width: 150px; color: var(--muted); font-size: 12px; }}
     .monitor-row.available .monitor-state strong {{ color: var(--green); }}
     .monitor-products {{ grid-column: 1 / -1; padding-top: 4px; }}
     .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }}
@@ -1499,6 +1551,7 @@ class Handler(BaseHTTPRequestHandler):
     .stock-item:hover {{ color: var(--blue); }}
     .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: #fff; }}
     .product-thumb img {{ width: 100%; height: 100%; object-fit: contain; }}
+    .product-thumb:empty::before {{ content: "商品"; color: var(--muted); font-size: 10px; }}
     .product-placeholder {{ color: var(--muted); font-size: 10px; }}
     .product-copy, .history-copy {{ min-width: 0; display: grid; gap: 3px; }}
     .product-copy strong, .history-copy strong {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }}
@@ -1585,6 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
     .muted {{ color: var(--muted); }}
     @media (max-width: 940px) {{
       .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .monitor-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .management-grid {{ grid-template-columns: 1fr; }}
       .settings-section + .settings-section {{ border-left: 0; border-top: 1px solid var(--line); }}
     }}
@@ -1607,6 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
       .summary strong {{ font-size: 23px; }}
       .summary .time-value {{ font-size: 17px; }}
       .task-grid, .public-task-grid, .form-grid {{ grid-template-columns: 1fr; }}
+      .monitor-grid {{ grid-template-columns: 1fr; }}
       .full-field {{ grid-column: auto; }}
       .advanced-grid {{ grid-template-columns: 1fr; }}
       .monitor-row {{ grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 15px; }}
