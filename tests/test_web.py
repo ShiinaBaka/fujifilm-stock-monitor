@@ -134,6 +134,14 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(settings["webhook_url"], "https://example.com/hook")
 
                 app.update_notifications({"serverchan_sendkey": "", "ntfy_topic": "", "webhook_url": ""})
+                self.assertEqual(app.notification_settings()["serverchan_sendkey"], "SCT123")
+
+                app.update_notifications({
+                    "serverchan_sendkey": "",
+                    "clear_serverchan_sendkey": "1",
+                    "ntfy_topic": "",
+                    "webhook_url": "",
+                })
                 data = json.loads(config.read_text())
                 self.assertEqual(data["notifications"], {})
 

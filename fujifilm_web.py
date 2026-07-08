@@ -689,14 +689,18 @@ class WebApp:
             notifications = {}
             config["notifications"] = notifications
         values = {
-            "serverchan_sendkey": form.get("serverchan_sendkey", "").strip(),
             "ntfy_topic": form.get("ntfy_topic", "").strip(),
             "webhook_url": form.get("webhook_url", "").strip(),
         }
+        serverchan_sendkey = form.get("serverchan_sendkey", "").strip()
         if values["webhook_url"]:
             parsed = urllib.parse.urlparse(values["webhook_url"])
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ValueError("Webhook URL 必须是 http 或 https 链接。")
+        if form.get("clear_serverchan_sendkey"):
+            notifications.pop("serverchan_sendkey", None)
+        elif serverchan_sendkey:
+            notifications["serverchan_sendkey"] = serverchan_sendkey
         for key, value in values.items():
             if value:
                 notifications[key] = value
@@ -704,7 +708,7 @@ class WebApp:
                 notifications.pop(key, None)
         write_json(self.config_path, config)
         self.restart_service()
-        enabled = sum(1 for value in values.values() if value)
+        enabled = sum(1 for value in notifications.values() if value)
         return f"推送设置已保存，已启用 {enabled} 个渠道。"
 
     def test_notifications(self) -> str:
@@ -1429,7 +1433,8 @@ class Handler(BaseHTTPRequestHandler):
                       <form method="post" class="settings-form">
                         <input type="hidden" name="auth_token" value="{csrf_field}">
                         <input type="hidden" name="action" value="save-notifications">
-                        <label>Server 酱<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SendKey"></label>
+                        <label>Server 酱<input type="password" name="serverchan_sendkey" autocomplete="off" placeholder="留空保持不变"></label>
+                        <label class="check-row"><input type="checkbox" name="clear_serverchan_sendkey" value="1"><span>清空 Server 酱 SendKey</span></label>
                         <label>ntfy<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="主题或 URL"></label>
                         <label>Webhook URL<input name="webhook_url" value="{html.escape(notifications['webhook_url'])}" placeholder="https://example.com/webhook"></label>
                         <button type="submit" class="wide-button">保存渠道</button>
@@ -1590,6 +1595,8 @@ class Handler(BaseHTTPRequestHandler):
     form {{ margin: 0; }}
     label {{ display: grid; gap: 7px; min-width: 0; color: var(--muted-strong); font-size: 12px; font-weight: 670; }}
     input, select {{ width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px 11px; background: var(--panel-raised); color: var(--ink); font-size: 14px; }}
+    input[type="checkbox"] {{ width: 16px; min-height: 16px; padding: 0; accent-color: var(--blue); }}
+    .check-row {{ grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 9px; font-size: 12px; font-weight: 650; }}
     input::placeholder {{ color: #969da7; }}
     input:focus, select:focus {{ outline: 3px solid var(--blue-soft); border-color: var(--blue); }}
     button, .button {{ min-height: 40px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 5px; padding: 9px 14px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; }}
