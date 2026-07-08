@@ -76,6 +76,13 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(history[0]["task"], "mini 相纸")
             self.assertEqual(history[0]["name"], "チェキ専用フィルム 1パック")
 
+    def test_run_check_uses_state_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            check = args(tmp, "mini_one_stock.html", alert_on_first_run=True)
+            monitor.run_check(check)
+            self.assertTrue(check.state_file.with_suffix(".json.lock").exists())
+
     def test_alert_on_first_run_does_not_repeat_without_policy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

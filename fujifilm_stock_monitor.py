@@ -9,6 +9,7 @@ https://mall-jp.fujifilm.com/shop/c/c306010/
 from __future__ import annotations
 
 import argparse
+import fcntl
 import http.cookiejar
 import html
 import json
@@ -23,6 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -229,6 +231,18 @@ def load_full_state(path: Path) -> dict:
         return {}
 
 
+@contextmanager
+def state_file_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def write_state(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -284,23 +298,25 @@ def record_stock_history(path: Path, task_name: str, products: Iterable[Product]
 
 
 def save_failure(path: Path, error: str) -> tuple[int, int]:
-    previous = load_full_state(path)
-    failures = int(previous.get("consecutive_failures", 0)) + 1
-    last_alert_count = int(previous.get("last_failure_alert_count", 0))
-    payload = {
-        **previous,
-        "last_failed_at": datetime.now().isoformat(timespec="seconds"),
-        "consecutive_failures": failures,
-        "last_error": error,
-    }
-    write_state(path, payload)
+    with state_file_lock(path):
+        previous = load_full_state(path)
+        failures = int(previous.get("consecutive_failures", 0)) + 1
+        last_alert_count = int(previous.get("last_failure_alert_count", 0))
+        payload = {
+            **previous,
+            "last_failed_at": datetime.now().isoformat(timespec="seconds"),
+            "consecutive_failures": failures,
+            "last_error": error,
+        }
+        write_state(path, payload)
     return failures, last_alert_count
 
 
 def mark_failure_alerted(path: Path, failures: int) -> None:
-    previous = load_full_state(path)
-    previous["last_failure_alert_count"] = failures
-    write_state(path, previous)
+    with state_file_lock(path):
+        previous = load_full_state(path)
+        previous["last_failure_alert_count"] = failures
+        write_state(path, previous)
 
 
 def current_month() -> str:
@@ -595,28 +611,29 @@ def run_check(args: argparse.Namespace) -> int:
     if not products:
         raise RuntimeError("No products found. The page layout may have changed.")
 
-    previous_stock = load_state(args.state_file)
-    newly_available = [
-        product for product in products if product.in_stock and previous_stock.get(product.url) is not True
-    ]
-    previous = previous_stock
-    monthly_notified: set[str] = set()
-    if args.monthly_marker_dir:
-        monthly_notified = load_monthly_notified(monthly_marker_path(args.monthly_marker_dir))
-        previous_state = load_full_state(args.state_file)
-        checked_at = str(previous_state.get("checked_at", ""))
-        if not checked_at.startswith(current_month()):
-            previous = {product.url: False for product in products}
-    restocked = [
-        product
-        for product in products
-        if product.in_stock
-        and (previous.get(product.url) is False or (args.alert_on_first_run and product.url not in previous))
-        and product.url not in monthly_notified
-    ]
+    with state_file_lock(args.state_file):
+        previous_stock = load_state(args.state_file)
+        newly_available = [
+            product for product in products if product.in_stock and previous_stock.get(product.url) is not True
+        ]
+        previous = previous_stock
+        monthly_notified: set[str] = set()
+        if args.monthly_marker_dir:
+            monthly_notified = load_monthly_notified(monthly_marker_path(args.monthly_marker_dir))
+            previous_state = load_full_state(args.state_file)
+            checked_at = str(previous_state.get("checked_at", ""))
+            if not checked_at.startswith(current_month()):
+                previous = {product.url: False for product in products}
+        restocked = [
+            product
+            for product in products
+            if product.in_stock
+            and (previous.get(product.url) is False or (args.alert_on_first_run and product.url not in previous))
+            and product.url not in monthly_notified
+        ]
 
-    save_state(args.state_file, products)
-    record_stock_history(args.state_file, args.task_name, newly_available)
+        save_state(args.state_file, products)
+        record_stock_history(args.state_file, args.task_name, newly_available)
 
     in_stock = [product for product in products if product.in_stock]
     sold_out_count = len(products) - len(in_stock)
