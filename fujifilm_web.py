@@ -1358,87 +1358,98 @@ class Handler(BaseHTTPRequestHandler):
               </div>
             </section>
             {summary}
-            <section class="panel toolbar-panel">
-              <div class="section-head">
-                <div><p class="section-kicker">运行状态</p><h2>服务控制</h2></div>
-                {service_badge}
-              </div>
-              <div class="action-bar">
-                <form method="post">
-                  <input type="hidden" name="auth_token" value="{csrf_field}">
-                  <button name="action" value="check">立即检查</button>
-                </form>
-                <a class="button secondary" href="/logs">运行日志</a>
-                <details class="service-actions">
-                  <summary class="button secondary">更多操作</summary>
+            <section class="admin-control-grid">
+              <section class="panel command-panel">
+                <div>
+                  <p class="section-kicker">快捷操作</p>
+                  <h2>现在要做什么</h2>
+                </div>
+                <div class="action-bar command-actions">
                   <form method="post">
                     <input type="hidden" name="auth_token" value="{csrf_field}">
-                    <button name="action" value="restart" class="secondary">重启服务</button>
-                    <button name="action" value="stop" class="danger-light">暂停服务</button>
-                    <button name="action" value="start" class="success-light">恢复服务</button>
+                    <button name="action" value="check">立即检查</button>
                   </form>
-                </details>
-              </div>
+                  <a class="button secondary" href="#new-task">添加监控</a>
+                  <a class="button secondary" href="/logs">运行日志</a>
+                  <details class="service-actions">
+                    <summary class="button ghost-button">服务操作</summary>
+                    <form method="post">
+                      <input type="hidden" name="auth_token" value="{csrf_field}">
+                      <button name="action" value="restart" class="secondary">重启服务</button>
+                      <button name="action" value="stop" class="danger-light">暂停服务</button>
+                      <button name="action" value="start" class="success-light">恢复服务</button>
+                    </form>
+                  </details>
+                </div>
+              </section>
+              <section class="panel service-panel">
+                <div>
+                  <p class="section-kicker">服务状态</p>
+                  <h2>{service_label}</h2>
+                </div>
+                {service_badge}
+              </section>
             </section>
-            <section class="admin-simple-grid">
-            <section class="panel add-panel" id="new-task">
-              <div class="section-head">
-                <div><p class="section-kicker">任务配置</p><h2>新建监控</h2></div>
-              </div>
-              <form method="post" class="form-grid">
-                <input type="hidden" name="auth_token" value="{csrf_field}">
-                <input type="hidden" name="action" value="add">
-                <label class="full-field">Fujifilm 链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/c/..." required></label>
-                <label>任务名称<input name="name" placeholder="例如 MINI 99"></label>
-                <label>补货后
-                  <select name="policy">
-                    <option value="monthly">每款商品每月提醒一次</option>
-                    <option value="stop">提醒后永久停止</option>
-                    <option value="none">每次补货都提醒</option>
-                  </select>
-                </label>
-                <details class="advanced-options full-field">
-                  <summary>高级设置</summary>
-                  <div class="advanced-grid">
-                    <label>分类标题<input name="require_text" placeholder="可选"></label>
-                    <label>检查间隔<input type="number" min="600" step="60" name="interval" inputmode="numeric" placeholder="3600 秒"></label>
-                    <label>随机延迟<input type="number" min="0" step="60" name="jitter" inputmode="numeric" placeholder="600 秒"></label>
+            <section class="admin-config-grid">
+              <section class="panel add-panel" id="new-task">
+                <div class="section-head">
+                  <div><p class="section-kicker">任务配置</p><h2>新建监控</h2></div>
+                </div>
+                <form method="post" class="form-grid">
+                  <input type="hidden" name="auth_token" value="{csrf_field}">
+                  <input type="hidden" name="action" value="add">
+                  <label class="full-field">Fujifilm 链接<input name="url" placeholder="https://mall-jp.fujifilm.com/shop/c/..." required></label>
+                  <label>任务名称<input name="name" placeholder="例如 MINI 99"></label>
+                  <label>补货后
+                    <select name="policy">
+                      <option value="monthly">每款商品每月提醒一次</option>
+                      <option value="stop">提醒后永久停止</option>
+                      <option value="none">每次补货都提醒</option>
+                    </select>
+                  </label>
+                  <details class="advanced-options full-field">
+                    <summary>高级设置</summary>
+                    <div class="advanced-grid">
+                      <label>分类标题<input name="require_text" placeholder="可选"></label>
+                      <label>检查间隔<input type="number" min="600" step="60" name="interval" inputmode="numeric" placeholder="3600 秒"></label>
+                      <label>随机延迟<input type="number" min="0" step="60" name="jitter" inputmode="numeric" placeholder="600 秒"></label>
+                    </div>
+                  </details>
+                  <button type="submit" class="wide-button full-field">添加任务</button>
+                </form>
+              </section>
+              <section class="panel compact-settings">
+                <details class="management-settings">
+                  <summary>
+                    <span class="summary-copy"><em>通知与登录</em><strong>推送渠道</strong></span>
+                    {notification_badge}
+                  </summary>
+                  <div class="settings-stack">
+                    <section class="settings-section push-panel">
+                      <form method="post" class="settings-form">
+                        <input type="hidden" name="auth_token" value="{csrf_field}">
+                        <input type="hidden" name="action" value="save-notifications">
+                        <label>Server 酱<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SendKey"></label>
+                        <label>ntfy<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="主题或 URL"></label>
+                        <label>Webhook URL<input name="webhook_url" value="{html.escape(notifications['webhook_url'])}" placeholder="https://example.com/webhook"></label>
+                        <button type="submit" class="wide-button">保存渠道</button>
+                      </form>
+                      <form method="post" class="inline-actions">
+                        <input type="hidden" name="auth_token" value="{csrf_field}">
+                        <button name="action" value="test-notifications" class="secondary wide-button">发送测试</button>
+                      </form>
+                    </section>
+                    <section class="settings-section passkey-panel">
+                      <div class="section-head">
+                        <div><p class="section-kicker">安全访问</p><h2>登录设备</h2></div>
+                        <span class="count-label">Passkey</span>
+                      </div>
+                      <button type="button" id="passkey-register" class="wide-button secondary">添加当前设备</button>
+                      <p id="passkey-status" class="small muted status-line"></p>
+                    </section>
                   </div>
                 </details>
-                <button type="submit" class="wide-button full-field">添加任务</button>
-              </form>
-            </section>
-            <details class="panel management-settings">
-              <summary>通知与登录</summary>
-              <div class="management-grid">
-            <section class="settings-section push-panel">
-              <div class="section-head">
-                <div><p class="section-kicker">消息通知</p><h2>推送渠道</h2></div>
-                {notification_badge}
-              </div>
-              <form method="post" class="settings-form">
-                <input type="hidden" name="auth_token" value="{csrf_field}">
-                <input type="hidden" name="action" value="save-notifications">
-                <label>Server 酱<input type="password" name="serverchan_sendkey" value="{html.escape(notifications['serverchan_sendkey'])}" autocomplete="off" placeholder="SendKey"></label>
-                <label>ntfy<input name="ntfy_topic" value="{html.escape(notifications['ntfy_topic'])}" placeholder="主题或 URL"></label>
-                <label>Webhook URL<input name="webhook_url" value="{html.escape(notifications['webhook_url'])}" placeholder="https://example.com/webhook"></label>
-                <button type="submit" class="wide-button">保存渠道</button>
-              </form>
-              <form method="post" class="inline-actions">
-                <input type="hidden" name="auth_token" value="{csrf_field}">
-                <button name="action" value="test-notifications" class="secondary wide-button">发送测试</button>
-              </form>
-            </section>
-            <section class="settings-section passkey-panel">
-              <div class="section-head">
-                <div><p class="section-kicker">安全访问</p><h2>登录设备</h2></div>
-                <span class="count-label">Passkey</span>
-              </div>
-              <button type="button" id="passkey-register" class="wide-button secondary">添加当前设备</button>
-              <p id="passkey-status" class="small muted status-line"></p>
-            </section>
-              </div>
-            </details>
+              </section>
             </section>
             <div class="section-title"><div><p class="section-kicker">运行任务</p><h2>监控任务</h2></div><span class="count-label">{len(tasks)} 个</span></div>
             <section class="task-grid">{''.join(rows) or "<p class='muted'>还没有监控任务。</p>"}</section>
@@ -1466,13 +1477,16 @@ class Handler(BaseHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
   <style>
-    :root {{ color-scheme: light; --bg: #f5f6f7; --panel: #ffffff; --ink: #171a1f; --muted: #69717d; --line: #dfe2e6; --line-strong: #c7ccd3; --blue: #1769e0; --blue-strong: #1057bd; --green: #087a57; --green-soft: #e8f5ef; --red: #bd1e2d; --red-soft: #fff0f1; --amber: #8a5a00; --amber-soft: #fff5d8; }}
+    :root {{ color-scheme: light; --bg: #f5f6f7; --panel: #ffffff; --panel-soft: #fafbfc; --panel-raised: #ffffff; --ink: #171a1f; --muted: #69717d; --muted-strong: #505866; --line: #dfe2e6; --line-strong: #c7ccd3; --blue: #1769e0; --blue-strong: #1057bd; --blue-soft: rgba(23, 105, 224, .13); --green: #087a57; --green-soft: #e8f5ef; --green-line: #9ccfba; --red: #bd1e2d; --red-soft: #fff0f1; --red-line: #e6b0b5; --amber: #8a5a00; --amber-soft: #fff5d8; --shadow: 0 1px 2px rgba(20, 24, 30, .035); --shadow-menu: 0 10px 30px rgba(20, 24, 30, .12); }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{ color-scheme: dark; --bg: #111418; --panel: #181c22; --panel-soft: #1f242c; --panel-raised: #202630; --ink: #f2f4f7; --muted: #a4acb8; --muted-strong: #c1c7d0; --line: #303742; --line-strong: #48515f; --blue: #6fa8ff; --blue-strong: #9bc4ff; --blue-soft: rgba(111, 168, 255, .18); --green: #55d59c; --green-soft: rgba(85, 213, 156, .13); --green-line: #318b68; --red: #ff7a86; --red-soft: rgba(255, 122, 134, .13); --red-line: #82444c; --amber: #f1bd62; --amber-soft: rgba(241, 189, 98, .14); --shadow: 0 1px 2px rgba(0, 0, 0, .25); --shadow-menu: 0 14px 32px rgba(0, 0, 0, .34); }}
+    }}
     * {{ box-sizing: border-box; }}
     html {{ background: var(--bg); }}
     body {{ min-width: 320px; min-height: 100vh; margin: 0; overflow-x: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; background: var(--bg); color: var(--ink); font-size: 15px; }}
     a {{ color: var(--blue); }}
     button, input, select {{ font: inherit; }}
-    header {{ height: 62px; display: flex; align-items: center; background: #fff; border-bottom: 1px solid var(--line); }}
+    header {{ height: 62px; display: flex; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); }}
     .topbar {{ width: min(1160px, calc(100% - 48px)); margin: 0 auto; }}
     .brand {{ width: fit-content; display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font-weight: 760; }}
     .brand-mark {{ width: 5px; height: 25px; background: var(--red); }}
@@ -1490,14 +1504,14 @@ class Handler(BaseHTTPRequestHandler):
     .page-actions {{ display: flex; align-items: center; gap: 16px; padding-bottom: 4px; }}
     .text-action, .auth-back {{ color: var(--muted); font-size: 14px; text-decoration: none; }}
     .text-action:hover, .auth-back:hover {{ color: var(--ink); }}
-    .availability-status {{ display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px; background: #fff; color: #505866; font-size: 13px; font-weight: 680; white-space: nowrap; }}
+    .availability-status {{ display: inline-flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 13px; background: var(--panel); color: var(--muted-strong); font-size: 13px; font-weight: 680; white-space: nowrap; }}
     .availability-status i, .badge i, .availability-line i {{ width: 7px; height: 7px; border-radius: 50%; background: #8b929c; }}
-    .availability-status.available {{ border-color: #a8d7c4; color: #075f45; background: var(--green-soft); }}
+    .availability-status.available {{ border-color: var(--green-line); color: var(--green); background: var(--green-soft); }}
     .availability-status.available i, .okb i {{ background: var(--green); }}
-    .panel, .card {{ min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
+    .panel, .card {{ min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); }}
     .panel {{ padding: 20px; }}
     .card {{ padding: 19px; }}
-    .summary {{ display: grid; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
+    .summary {{ display: grid; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow); }}
     .public-summary {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
     .admin-summary {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     .summary div {{ min-width: 0; padding: 17px 20px; border-right: 1px solid var(--line); }}
@@ -1515,8 +1529,8 @@ class Handler(BaseHTTPRequestHandler):
     .count-label {{ color: var(--muted); font-size: 12px; font-weight: 650; white-space: nowrap; }}
     .monitor-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 14px; }}
     .monitor-grid > .empty-state {{ grid-column: 1 / -1; }}
-    .monitor-row {{ min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(20, 24, 30, .035); }}
-    .monitor-row.available {{ border-color: #9ccfba; box-shadow: inset 0 3px 0 var(--green); }}
+    .monitor-row {{ min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); }}
+    .monitor-row.available {{ border-color: var(--green-line); box-shadow: inset 0 3px 0 var(--green); }}
     .monitor-identity {{ min-width: 0; }}
     .monitor-identity h2 {{ font-size: 16px; }}
     .monitor-state {{ min-width: 0; display: grid; justify-items: end; gap: 4px; text-align: right; }}
@@ -1527,13 +1541,13 @@ class Handler(BaseHTTPRequestHandler):
     .task-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }}
     .public-task-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     .stock-card {{ display: grid; gap: 16px; align-content: start; }}
-    .stock-card.has-stock {{ border-color: #9ccfba; box-shadow: inset 0 3px 0 var(--green); }}
+    .stock-card.has-stock {{ border-color: var(--green-line); box-shadow: inset 0 3px 0 var(--green); }}
     .stock-card .card-head {{ margin-bottom: 0; }}
     .task-url {{ display: inline-flex; align-items: center; gap: 5px; width: fit-content; margin-top: 7px; color: var(--muted); font-size: 12px; text-decoration: none; }}
-    .task-url span {{ color: #8a919b; }}
+    .task-url span {{ color: var(--muted); }}
     .task-url:hover, .task-url:hover span {{ color: var(--blue); }}
     .badge {{ display: inline-flex; align-items: center; gap: 7px; min-height: 26px; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 680; white-space: nowrap; }}
-    .badge.okb {{ background: var(--green-soft); color: #075f45; }}
+    .badge.okb {{ background: var(--green-soft); color: var(--green); }}
     .badge.warn {{ background: var(--amber-soft); color: var(--amber); }}
     .badge.warn i {{ background: #b57900; }}
     .stock-meter {{ display: grid; grid-template-columns: 72px 72px minmax(0, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }}
@@ -1549,7 +1563,7 @@ class Handler(BaseHTTPRequestHandler):
     .stock-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 62px; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ink); text-decoration: none; }}
     .stock-item:last-child {{ border-bottom: 1px solid var(--line); }}
     .stock-item:hover {{ color: var(--blue); }}
-    .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: #fff; }}
+    .product-thumb {{ width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-raised); }}
     .product-thumb img {{ width: 100%; height: 100%; object-fit: contain; }}
     .product-thumb:empty::before {{ content: "商品"; color: var(--muted); font-size: 10px; }}
     .product-placeholder {{ color: var(--muted); font-size: 10px; }}
@@ -1562,29 +1576,31 @@ class Handler(BaseHTTPRequestHandler):
     .task-details summary:hover, .backup-access summary:hover {{ color: var(--ink); }}
     .metric-list {{ display: grid; grid-template-columns: 96px 1fr; gap: 8px 12px; margin: 12px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line); }}
     dt {{ color: var(--muted); }}
-    dd {{ min-width: 0; margin: 0; color: #3d444e; overflow-wrap: anywhere; }}
+    dd {{ min-width: 0; margin: 0; color: var(--muted-strong); overflow-wrap: anywhere; }}
     .history-panel {{ padding: 0; overflow: hidden; }}
     .history-panel .section-head {{ align-items: center; margin: 0; padding: 18px 20px; border-bottom: 1px solid var(--line); }}
     .history-list {{ display: grid; }}
-    .history-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 20px; color: var(--ink); text-decoration: none; border-bottom: 1px solid #eceef1; }}
+    .history-item {{ display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 20px; color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }}
     .history-item:last-child {{ border-bottom: 0; }}
-    .history-item:hover {{ background: #f8f9fa; }}
+    .history-item:hover {{ background: var(--panel-soft); }}
     .history-item time {{ white-space: nowrap; }}
     .empty-state {{ min-height: 104px; display: grid; place-content: center; gap: 5px; text-align: center; color: var(--muted); }}
-    .empty-state strong {{ color: #4d5561; font-size: 14px; }}
+    .empty-state strong {{ color: var(--muted-strong); font-size: 14px; }}
     .empty-state span {{ font-size: 12px; }}
     form {{ margin: 0; }}
-    label {{ display: grid; gap: 7px; min-width: 0; color: #3e454f; font-size: 12px; font-weight: 670; }}
-    input, select {{ width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px 11px; background: #fff; color: var(--ink); font-size: 14px; }}
+    label {{ display: grid; gap: 7px; min-width: 0; color: var(--muted-strong); font-size: 12px; font-weight: 670; }}
+    input, select {{ width: 100%; min-height: 42px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 9px 11px; background: var(--panel-raised); color: var(--ink); font-size: 14px; }}
     input::placeholder {{ color: #969da7; }}
-    input:focus, select:focus {{ outline: 3px solid rgba(23, 105, 224, .13); border-color: var(--blue); }}
+    input:focus, select:focus {{ outline: 3px solid var(--blue-soft); border-color: var(--blue); }}
     button, .button {{ min-height: 40px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--blue); border-radius: 5px; padding: 9px 14px; background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; }}
     button:hover, .button:hover {{ border-color: var(--blue-strong); background: var(--blue-strong); }}
-    .secondary {{ border-color: var(--line-strong); background: #fff; color: #353c46; }}
-    .secondary:hover {{ border-color: #9da4ad; background: #f4f5f6; color: var(--ink); }}
-    .danger-light {{ border-color: #e4aab0; background: #fff; color: var(--red); }}
+    .secondary {{ border-color: var(--line-strong); background: var(--panel); color: var(--ink); }}
+    .secondary:hover {{ border-color: var(--line-strong); background: var(--panel-soft); color: var(--ink); }}
+    .ghost-button {{ border-color: var(--line); background: var(--panel-soft); color: var(--ink); }}
+    .ghost-button:hover {{ border-color: var(--line-strong); background: var(--panel-raised); color: var(--ink); }}
+    .danger-light {{ border-color: var(--red-line); background: var(--panel); color: var(--red); }}
     .danger-light:hover {{ border-color: var(--red); background: var(--red-soft); }}
-    .success-light {{ border-color: #9bcbb8; background: #fff; color: var(--green); }}
+    .success-light {{ border-color: var(--green-line); background: var(--panel); color: var(--green); }}
     .success-light:hover {{ border-color: var(--green); background: var(--green-soft); }}
     .danger-link {{ min-height: 36px; border-color: transparent; background: transparent; color: var(--red); }}
     .danger-link:hover {{ border-color: transparent; background: var(--red-soft); }}
@@ -1593,22 +1609,35 @@ class Handler(BaseHTTPRequestHandler):
     .service-actions {{ position: relative; }}
     .service-actions > summary, .advanced-options > summary, .management-settings > summary {{ list-style: none; cursor: pointer; }}
     .service-actions > summary::-webkit-details-marker, .advanced-options > summary::-webkit-details-marker, .management-settings > summary::-webkit-details-marker {{ display: none; }}
-    .service-actions > form {{ position: absolute; z-index: 5; top: 46px; right: 0; width: 150px; display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 30px rgba(20, 24, 30, .12); }}
+    .service-actions > form {{ position: absolute; z-index: 5; top: 46px; right: 0; width: 150px; display: grid; gap: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow-menu); }}
     .service-actions > form button {{ width: 100%; }}
     .toolbar-panel .section-head {{ align-items: center; }}
-    .admin-simple-grid {{ display: grid; gap: 16px; }}
+    .admin-control-grid {{ display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 14px; align-items: stretch; }}
+    .command-panel, .service-panel {{ display: flex; align-items: center; justify-content: space-between; gap: 18px; }}
+    .command-panel h2, .service-panel h2 {{ margin-top: 0; }}
+    .command-actions {{ justify-content: flex-end; }}
+    .command-actions > form {{ display: contents; }}
+    .service-panel {{ background: linear-gradient(135deg, var(--panel), var(--panel-soft)); }}
+    .service-panel .badge {{ align-self: flex-start; }}
+    .admin-config-grid {{ display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); gap: 14px; align-items: start; }}
     .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .full-field {{ grid-column: 1 / -1; }}
     .advanced-options {{ color: var(--muted); font-size: 12px; }}
     .advanced-options > summary {{ width: fit-content; }}
     .advanced-options > summary:hover {{ color: var(--ink); }}
     .advanced-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }}
-    .management-settings {{ padding: 0; }}
-    .management-settings > summary {{ padding: 18px 20px; font-weight: 700; }}
+    .compact-settings {{ padding: 0; overflow: hidden; }}
+    .management-settings {{ min-width: 0; }}
+    .management-settings > summary {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; font-weight: 700; }}
+    .summary-copy {{ display: grid; gap: 5px; }}
+    .summary-copy em {{ color: var(--red); font-size: 11px; font-style: normal; font-weight: 760; text-transform: uppercase; }}
+    .summary-copy strong {{ font-size: 18px; line-height: 1.25; }}
     .management-settings[open] > summary {{ border-bottom: 1px solid var(--line); }}
+    .settings-stack {{ display: grid; }}
+    .settings-stack .settings-section + .settings-section {{ border-top: 1px solid var(--line); }}
     .management-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     .settings-section {{ min-width: 0; padding: 20px; }}
-    .settings-section + .settings-section {{ border-left: 1px solid var(--line); }}
+    .management-grid .settings-section + .settings-section {{ border-left: 1px solid var(--line); }}
     .management-grid .passkey-panel {{ display: block; }}
     .management-grid .passkey-panel .section-head {{ margin-bottom: 18px; }}
     .management-grid .passkey-panel .status-line {{ margin-top: 8px; }}
@@ -1617,16 +1646,16 @@ class Handler(BaseHTTPRequestHandler):
     .task-actions {{ padding-top: 4px; }}
     .task-actions .secondary, .task-actions .danger-link {{ flex: 1 1 auto; }}
     .notice {{ margin: 0; padding: 12px 14px; border: 1px solid; border-radius: 5px; font-size: 13px; }}
-    .notice.ok {{ border-color: #a8d7c4; background: var(--green-soft); color: #075f45; }}
+    .notice.ok {{ border-color: var(--green-line); background: var(--green-soft); color: var(--green); }}
     .error, .error-box {{ color: var(--red); }}
-    .error-box {{ border-color: #e6b0b5; background: var(--red-soft); }}
+    .error-box {{ border-color: var(--red-line); background: var(--red-soft); }}
     .task-error {{ margin: 0; padding: 10px 11px; border-left: 3px solid var(--red); background: var(--red-soft); color: var(--red); font-size: 12px; }}
     .auth-shell {{ width: min(440px, 100%); margin: 38px auto 0; }}
     .auth-panel {{ padding: 28px; }}
     .auth-title {{ display: grid; justify-items: center; margin-bottom: 24px; text-align: center; }}
     .auth-title h1 {{ margin-bottom: 6px; font-size: 27px; }}
     .auth-title > p:last-child {{ margin: 0; color: var(--muted); font-size: 14px; }}
-    .auth-symbol {{ width: 44px; height: 44px; display: grid; place-items: center; margin-bottom: 18px; border: 1px solid #282d34; border-bottom: 4px solid var(--red); border-radius: 5px; background: #20242a; color: #fff; font-size: 18px; font-weight: 800; }}
+    .auth-symbol {{ width: 44px; height: 44px; display: grid; place-items: center; margin-bottom: 18px; border: 1px solid var(--line-strong); border-bottom: 4px solid var(--red); border-radius: 5px; background: #20242a; color: #fff; font-size: 18px; font-weight: 800; }}
     .auth-primary {{ min-height: 46px; }}
     .backup-access {{ margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; }}
     .backup-form {{ display: grid; gap: 12px; margin-top: 14px; }}
@@ -1639,8 +1668,11 @@ class Handler(BaseHTTPRequestHandler):
     @media (max-width: 940px) {{
       .public-task-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .monitor-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .admin-control-grid, .admin-config-grid {{ grid-template-columns: 1fr; }}
+      .command-panel {{ align-items: flex-start; flex-direction: column; }}
+      .command-actions {{ width: 100%; justify-content: flex-start; }}
       .management-grid {{ grid-template-columns: 1fr; }}
-      .settings-section + .settings-section {{ border-left: 0; border-top: 1px solid var(--line); }}
+      .management-grid .settings-section + .settings-section {{ border-left: 0; border-top: 1px solid var(--line); }}
     }}
     @media (max-width: 680px) {{
       header {{ height: 56px; }}
@@ -1652,6 +1684,10 @@ class Handler(BaseHTTPRequestHandler):
       .page-heading p:last-child {{ overflow-wrap: anywhere; }}
       .page-heading, .section-title {{ flex-wrap: wrap; }}
       .page-actions {{ width: 100%; justify-content: space-between; }}
+      .command-panel, .service-panel {{ padding: 16px; }}
+      .command-actions {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .command-actions > * {{ width: 100%; }}
+      .service-actions > form {{ left: 0; right: auto; width: min(190px, calc(100vw - 28px)); }}
       .public-summary, .admin-summary {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .summary div {{ padding: 14px; border-bottom: 1px solid var(--line); }}
       .summary div:nth-child(2n) {{ border-right: 0; }}
