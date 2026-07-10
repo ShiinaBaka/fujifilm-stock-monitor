@@ -12,6 +12,22 @@ Environment=TZ=Asia/Tokyo
 ExecStart=__INSTALL_DIR__/fujifilm_web.py --config __CONFIG_DIR__/config.json --install-dir __INSTALL_DIR__ --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__CONFIG_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=48
+CPUQuota=60%
 
 [Install]
 WantedBy=default.target

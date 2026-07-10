@@ -5,20 +5,27 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import html
 import hmac
+import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
+from contextlib import contextmanager
 from datetime import datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -33,6 +40,12 @@ FUJIFILM_HOST = "mall-jp.fujifilm.com"
 SESSION_SECONDS = 12 * 60 * 60
 PBKDF2_ITERATIONS = 260000
 WEBAUTHN_CHALLENGE_SECONDS = 5 * 60
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+IMAGE_CACHE_BYTES = 24 * 1024 * 1024
+IMAGE_CACHE_ITEMS = 128
+IMAGE_SUCCESS_TTL = 24 * 60 * 60
+IMAGE_FAILURE_TTL = 5 * 60
+MAX_WEB_THREADS = 24
 
 
 def safe_task_slug(text: str) -> str:
@@ -51,19 +64,119 @@ def load_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def write_json(path: Path, data: dict) -> None:
+@contextmanager
+def json_file_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def write_json_unlocked(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_stat = path.stat() if path.exists() else None
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    if existing_stat:
-        os.chmod(tmp, existing_stat.st_mode & 0o777)
-        os.chown(tmp, existing_stat.st_uid, existing_stat.st_gid)
-    else:
-        os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if existing_stat:
+            os.chmod(tmp, existing_stat.st_mode & 0o777)
+            try:
+                os.chown(tmp, existing_stat.st_uid, existing_stat.st_gid)
+            except PermissionError:
+                # A dedicated web user may replace a group-owned config without
+                # being allowed to retain the previous owner's uid.
+                os.chown(tmp, -1, existing_stat.st_gid)
+        else:
+            os.chmod(tmp, 0o600)
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def write_json(path: Path, data: dict) -> None:
+    with json_file_lock(path):
+        write_json_unlocked(path, data)
+
+
+def validate_public_https_url(raw_url: str, label: str = "URL", resolve: bool = True) -> str:
+    url = raw_url.strip()
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError(f"{label} 必须是公开的 HTTPS 链接。")
+    try:
+        port = parsed.port or 443
+    except ValueError:
+        raise ValueError(f"{label} 端口无效。") from None
+    try:
+        literal_ip = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None and not literal_ip.is_global:
+        raise ValueError(f"{label} 不允许访问本机、内网或保留地址。")
+    if resolve:
+        try:
+            addresses = {
+                item[4][0]
+                for item in socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+            }
+        except socket.gaierror:
+            raise ValueError(f"{label} 域名无法解析。") from None
+        if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+            raise ValueError(f"{label} 不允许访问本机、内网或保留地址。")
+    return url
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirectHandler())
+
+
+class ImageCache:
+    def __init__(self, max_items: int = IMAGE_CACHE_ITEMS, max_bytes: int = IMAGE_CACHE_BYTES) -> None:
+        self.max_items = max_items
+        self.max_bytes = max_bytes
+        self.total_bytes = 0
+        self.entries: OrderedDict[str, tuple[float, str, bytes, int]] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key: str) -> tuple[str, bytes, int] | None:
+        now = time.time()
+        with self.lock:
+            item = self.entries.get(key)
+            if not item:
+                return None
+            expires, content_type, data, max_age = item
+            if expires <= now:
+                self.total_bytes -= len(data)
+                del self.entries[key]
+                return None
+            self.entries.move_to_end(key)
+            return content_type, data, max_age
+
+    def put(self, key: str, content_type: str, data: bytes, ttl: int) -> None:
+        with self.lock:
+            previous = self.entries.pop(key, None)
+            if previous:
+                self.total_bytes -= len(previous[2])
+            self.entries[key] = (time.time() + ttl, content_type, data, ttl)
+            self.total_bytes += len(data)
+            while len(self.entries) > self.max_items or self.total_bytes > self.max_bytes:
+                _, removed = self.entries.popitem(last=False)
+                self.total_bytes -= len(removed[2])
 
 
 def resolve_path(value: str | None, base: Path) -> Path | None:
@@ -165,6 +278,11 @@ def verify_admin_key_hash(admin_key: str, encoded_hash: str) -> bool:
         return hmac.compare_digest(b64encode(expected), digest)
     except (ValueError, TypeError):
         return False
+
+
+def validate_sign_count(old_count: int, new_count: int) -> None:
+    if old_count > 0 and new_count > 0 and new_count <= old_count:
+        raise ValueError("Passkey 签名计数异常，凭据可能已被复制。")
 
 
 class CborReader:
@@ -364,6 +482,11 @@ class WebApp:
         self.allow_no_auth = args.allow_no_auth
         self.monitor_script = self.install_dir / "fujifilm_stock_monitor.py"
         self.systemctl_scope = args.systemctl_scope
+        self.image_cache = ImageCache()
+        self._rate_lock = threading.Lock()
+        self._rate_events: dict[str, list[float]] = {}
+        self._challenge_lock = threading.Lock()
+        self._used_challenges: dict[str, int] = {}
 
     def has_login_secret(self) -> bool:
         return bool(self.admin_key_hash or self.legacy_token)
@@ -442,11 +565,39 @@ class WebApp:
             if not hmac.compare_digest(expected, signature):
                 raise ValueError("Challenge signature mismatch.")
             payload = json.loads(b64decode(raw).decode("utf-8"))
-            if payload.get("purpose") != purpose or int(payload.get("expires", 0)) < int(time.time()):
+            expires = int(payload.get("expires", 0))
+            if payload.get("purpose") != purpose or expires < int(time.time()):
                 raise ValueError("Challenge expired.")
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            with self._challenge_lock:
+                now = int(time.time())
+                self._used_challenges = {
+                    key: item_expires for key, item_expires in self._used_challenges.items() if item_expires >= now
+                }
+                if token_hash in self._used_challenges:
+                    raise ValueError("Challenge already used.")
+                self._used_challenges[token_hash] = expires
             return str(payload["challenge"])
         except (ValueError, KeyError, json.JSONDecodeError):
             raise ValueError("Passkey challenge 已过期，请刷新重试。") from None
+
+    def allow_request(self, bucket: str, client_ip: str, per_ip: int, global_limit: int, window: int = 60) -> bool:
+        now = time.monotonic()
+        cutoff = now - window
+        keys = (f"{bucket}:ip:{client_ip}", f"{bucket}:global")
+        limits = (per_ip, global_limit)
+        with self._rate_lock:
+            for key in list(self._rate_events):
+                recent = [event for event in self._rate_events[key] if event > cutoff]
+                if recent:
+                    self._rate_events[key] = recent
+                else:
+                    del self._rate_events[key]
+            if any(len(self._rate_events.get(key, [])) >= limit for key, limit in zip(keys, limits)):
+                return False
+            for key in keys:
+                self._rate_events.setdefault(key, []).append(now)
+        return True
 
     def passkey_register_options(self, host: str) -> dict:
         challenge = b64encode(secrets.token_bytes(32))
@@ -505,14 +656,18 @@ class WebApp:
             raise ValueError("Passkey 需要用户在场和本地验证。")
         credential_id = b64encode(auth_data["credential_id"])
         public_key_pem = pem_public_key_from_cose(auth_data["cose_key"])
-        credentials = self.credentials()
-        credentials[credential_id] = {
-            "name": str(payload.get("name") or f"Passkey {len(credentials) + 1}"),
-            "public_key_pem": public_key_pem,
-            "sign_count": int(auth_data["sign_count"]),
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        self.save_credentials(credentials)
+        with json_file_lock(self.credentials_path):
+            current = load_json(self.credentials_path)
+            credentials = current.get("credentials", {})
+            if not isinstance(credentials, dict):
+                credentials = {}
+            credentials[credential_id] = {
+                "name": str(payload.get("name") or f"Passkey {len(credentials) + 1}"),
+                "public_key_pem": public_key_pem,
+                "sign_count": int(auth_data["sign_count"]),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            write_json_unlocked(self.credentials_path, {"credentials": credentials})
         return credential_id
 
     def verify_login(self, host: str, payload: dict) -> str:
@@ -542,9 +697,17 @@ class WebApp:
         signature = b64decode(str(response.get("signature", "")))
         if not verify_signature_with_openssl(str(credential.get("public_key_pem", "")), signature_base, signature):
             raise ValueError("Passkey 签名验证失败。")
-        if int(parsed_auth["sign_count"]) > 0:
-            credential["sign_count"] = int(parsed_auth["sign_count"])
-            self.save_credentials(credentials)
+        new_count = int(parsed_auth["sign_count"])
+        old_count = int(credential.get("sign_count", 0) or 0)
+        validate_sign_count(old_count, new_count)
+        if new_count > 0:
+            with json_file_lock(self.credentials_path):
+                current = load_json(self.credentials_path)
+                current_credentials = current.get("credentials", {})
+                if not isinstance(current_credentials, dict) or credential_id not in current_credentials:
+                    raise ValueError("Passkey 未注册。")
+                current_credentials[credential_id]["sign_count"] = new_count
+                write_json_unlocked(self.credentials_path, {"credentials": current_credentials})
         return credential_id
 
     def config(self) -> dict:
@@ -634,41 +797,40 @@ class WebApp:
         policy: str = "monthly",
     ) -> str:
         url = validate_fujifilm_url(raw_url)
-        config = self.config()
-        tasks = config.setdefault("tasks", [])
-        if not isinstance(tasks, list):
-            raise ValueError("config.json 里的 tasks 必须是数组。")
-        if any(isinstance(task, dict) and str(task.get("url", "")).rstrip("/") == url.rstrip("/") for task in tasks):
-            raise ValueError("这个链接已经在监控列表里。")
+        with json_file_lock(self.config_path):
+            config = self.config()
+            tasks = config.setdefault("tasks", [])
+            if not isinstance(tasks, list):
+                raise ValueError("config.json 里的 tasks 必须是数组。")
+            if any(isinstance(task, dict) and str(task.get("url", "")).rstrip("/") == url.rstrip("/") for task in tasks):
+                raise ValueError("这个链接已经在监控列表里。")
 
-        parsed = urllib.parse.urlparse(url)
-        if parsed.path.startswith("/shop/g/"):
-            default_name = f"商品 {product_id_from_url(url)}"
-            default_require_text = ""
-        else:
-            default_name = f"分类 {parsed.path.rstrip('/').split('/')[-1]}"
-            default_require_text = ""
-        name = raw_name.strip() or default_name
-        slug = safe_task_slug(name)
-        task = {
-            "name": name,
-            "url": url,
-            "require_text": default_require_text if require_text is None else require_text.strip(),
-            "state_file": f"state/{slug}.json",
-            "alert_on_first_run": True,
-        }
-        if interval and interval.strip():
-            task["interval"] = max(int(interval), 600)
-        if jitter and jitter.strip():
-            task["jitter"] = max(int(jitter), 0)
-        if policy == "stop":
-            task["stop_marker"] = f"stopped/{slug}.json"
-        elif policy == "none":
-            pass
-        else:
-            task["monthly_marker_dir"] = f"monthly/{slug}"
-        tasks.append(task)
-        write_json(self.config_path, config)
+            parsed = urllib.parse.urlparse(url)
+            if parsed.path.startswith("/shop/g/"):
+                default_name = f"商品 {product_id_from_url(url)}"
+                default_require_text = ""
+            else:
+                default_name = f"分类 {parsed.path.rstrip('/').split('/')[-1]}"
+                default_require_text = ""
+            name = raw_name.strip() or default_name
+            slug = safe_task_slug(name)
+            task = {
+                "name": name,
+                "url": url,
+                "require_text": default_require_text if require_text is None else require_text.strip(),
+                "state_file": f"state/{slug}.json",
+                "alert_on_first_run": True,
+            }
+            if interval and interval.strip():
+                task["interval"] = max(int(interval), 600)
+            if jitter and jitter.strip():
+                task["jitter"] = max(int(jitter), 0)
+            if policy == "stop":
+                task["stop_marker"] = f"stopped/{slug}.json"
+            elif policy != "none":
+                task["monthly_marker_dir"] = f"monthly/{slug}"
+            tasks.append(task)
+            write_json_unlocked(self.config_path, config)
         self.restart_service()
         return name
 
@@ -683,30 +845,31 @@ class WebApp:
         }
 
     def update_notifications(self, form: dict[str, str]) -> str:
-        config = self.config()
-        notifications = config.setdefault("notifications", {})
-        if not isinstance(notifications, dict):
-            notifications = {}
-            config["notifications"] = notifications
         values = {
             "ntfy_topic": form.get("ntfy_topic", "").strip(),
             "webhook_url": form.get("webhook_url", "").strip(),
         }
         serverchan_sendkey = form.get("serverchan_sendkey", "").strip()
         if values["webhook_url"]:
-            parsed = urllib.parse.urlparse(values["webhook_url"])
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("Webhook URL 必须是 http 或 https 链接。")
-        if form.get("clear_serverchan_sendkey"):
-            notifications.pop("serverchan_sendkey", None)
-        elif serverchan_sendkey:
-            notifications["serverchan_sendkey"] = serverchan_sendkey
-        for key, value in values.items():
-            if value:
-                notifications[key] = value
-            else:
-                notifications.pop(key, None)
-        write_json(self.config_path, config)
+            values["webhook_url"] = validate_public_https_url(values["webhook_url"], "Webhook URL", resolve=False)
+        if values["ntfy_topic"].startswith(("http://", "https://")):
+            values["ntfy_topic"] = validate_public_https_url(values["ntfy_topic"], "ntfy URL", resolve=False)
+        with json_file_lock(self.config_path):
+            config = self.config()
+            notifications = config.setdefault("notifications", {})
+            if not isinstance(notifications, dict):
+                notifications = {}
+                config["notifications"] = notifications
+            if form.get("clear_serverchan_sendkey"):
+                notifications.pop("serverchan_sendkey", None)
+            elif serverchan_sendkey:
+                notifications["serverchan_sendkey"] = serverchan_sendkey
+            for key, value in values.items():
+                if value:
+                    notifications[key] = value
+                else:
+                    notifications.pop(key, None)
+            write_json_unlocked(self.config_path, config)
         self.restart_service()
         enabled = sum(1 for value in notifications.values() if value)
         return f"推送设置已保存，已启用 {enabled} 个渠道。"
@@ -752,16 +915,18 @@ class WebApp:
 
     def send_ntfy(self, topic_or_url: str, title: str, message: str, first_url: str) -> None:
         url = topic_or_url if topic_or_url.startswith(("http://", "https://")) else "https://ntfy.sh/" + topic_or_url.strip("/")
+        url = validate_public_https_url(url, "ntfy URL")
         request = urllib.request.Request(
             url,
             data=(message + "\n" + first_url).encode("utf-8"),
             headers={"User-Agent": "FujifilmStockWeb/1.0", "Title": title, "Tags": "shopping_cart", "Click": first_url},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=15):
+        with NO_REDIRECT_OPENER.open(request, timeout=15):
             pass
 
     def send_webhook(self, webhook_url: str, title: str, message: str) -> None:
+        webhook_url = validate_public_https_url(webhook_url, "Webhook URL")
         payload = json.dumps({"title": title, "message": message}, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             webhook_url,
@@ -769,18 +934,19 @@ class WebApp:
             headers={"User-Agent": "FujifilmStockWeb/1.0", "Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=15):
+        with NO_REDIRECT_OPENER.open(request, timeout=15):
             pass
 
     def delete_task(self, raw_index: str) -> str:
         index = int(raw_index)
-        config = self.config()
-        tasks = config.get("tasks", [])
-        if not isinstance(tasks, list) or index < 0 or index >= len(tasks):
-            raise ValueError("任务不存在。")
-        task = tasks.pop(index)
-        name = task.get("name", f"#{index}") if isinstance(task, dict) else f"#{index}"
-        write_json(self.config_path, config)
+        with json_file_lock(self.config_path):
+            config = self.config()
+            tasks = config.get("tasks", [])
+            if not isinstance(tasks, list) or index < 0 or index >= len(tasks):
+                raise ValueError("任务不存在。")
+            task = tasks.pop(index)
+            name = task.get("name", f"#{index}") if isinstance(task, dict) else f"#{index}"
+            write_json_unlocked(self.config_path, config)
         self.restart_service()
         return str(name)
 
@@ -849,6 +1015,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
+    def client_ip(self) -> str:
+        candidates = [
+            self.headers.get("CF-Connecting-IP", ""),
+            self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip(),
+            self.client_address[0],
+        ]
+        for candidate in candidates:
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                continue
+        return "unknown"
+
+    def rate_allowed(self, bucket: str, per_ip: int, global_limit: int) -> bool:
+        return self.app.allow_request(bucket, self.client_ip(), per_ip, global_limit)
+
     def is_authenticated(self) -> bool:
         if self.app.allow_no_auth:
             return True
@@ -914,6 +1096,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
             return
+        cached = self.app.image_cache.get(url)
+        if cached:
+            content_type, data, max_age = cached
+            self.send_image(content_type, data, max_age)
+            return
         request = urllib.request.Request(
             url,
             headers={
@@ -923,13 +1110,17 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=12) as response:
+            with NO_REDIRECT_OPENER.open(request, timeout=12) as response:
                 content_type = response.headers.get_content_type()
-                if not content_type.startswith("image/"):
+                if content_type not in {"image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"}:
                     raise ValueError("unexpected image content type")
-                data = response.read(4 * 1024 * 1024 + 1)
-                if len(data) > 4 * 1024 * 1024:
+                declared_size = int(response.headers.get("Content-Length", "0") or "0")
+                if declared_size > MAX_IMAGE_BYTES:
                     raise ValueError("image too large")
+                data = response.read(MAX_IMAGE_BYTES + 1)
+                if len(data) > MAX_IMAGE_BYTES:
+                    raise ValueError("image too large")
+            max_age = IMAGE_SUCCESS_TTL
         except (OSError, ValueError):
             data = (
                 b'<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">'
@@ -939,10 +1130,16 @@ class Handler(BaseHTTPRequestHandler):
                 b'</svg>'
             )
             content_type = "image/svg+xml"
+            max_age = IMAGE_FAILURE_TTL
+        self.app.image_cache.put(url, content_type, data, max_age)
+        self.send_image(content_type, data, max_age)
+
+    def send_image(self, content_type: str, data: bytes, max_age: int) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Cache-Control", f"public, max-age={max_age}")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
@@ -953,22 +1150,47 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def read_form(self) -> dict[str, str]:
-        size = int(self.headers.get("Content-Length", "0") or "0")
-        if size > 16384:
+        size = self.content_length(16384)
+        if size is None:
             raise ValueError("请求太大。")
         raw = self.rfile.read(size).decode("utf-8", "replace")
         values = urllib.parse.parse_qs(raw, keep_blank_values=True)
         return {key: values[key][0] for key in values}
 
     def read_json(self) -> dict:
-        size = int(self.headers.get("Content-Length", "0") or "0")
-        if size > 32768:
+        size = self.content_length(32768)
+        if size is None:
             raise ValueError("请求太大。")
         raw = self.rfile.read(size).decode("utf-8", "replace")
         data = json.loads(raw or "{}")
         if not isinstance(data, dict):
             raise ValueError("请求格式无效。")
         return data
+
+    def content_length(self, maximum: int) -> int | None:
+        try:
+            size = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            return None
+        return size if 0 <= size <= maximum else None
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path not in {"/", "/login", "/admin"}:
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            return
+        if parsed.path == "/admin" and not self.is_authenticated():
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
 
     def require_post_token(self, form: dict[str, str]) -> None:
         if self.app.allow_no_auth:
@@ -985,6 +1207,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_javascript(self.app_script())
             return
         if parsed.path == "/image":
+            if not self.rate_allowed("image", 120, 600):
+                self.send_text("请求过于频繁，请稍后重试。", HTTPStatus.TOO_MANY_REQUESTS)
+                return
             image_url = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
             self.send_image_proxy(image_url)
             return
@@ -1026,6 +1251,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             if self.path == "/webauthn/login/verify":
+                if not self.rate_allowed("passkey-login", 20, 120):
+                    self.send_json({"ok": False, "error": "请求过于频繁，请稍后重试。"}, HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 payload = self.read_json()
                 self.app.verify_login(self.headers.get("Host", ""), payload)
                 session_cookie = self.app.make_session_cookie()
@@ -1054,6 +1282,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             form = self.read_form()
             if self.path.startswith("/login"):
+                if not self.rate_allowed("key-login", 6, 40):
+                    self.send_html(self.login_page("尝试次数过多，请一分钟后重试。"), HTTPStatus.TOO_MANY_REQUESTS)
+                    return
                 admin_key = form.get("admin_key", "")
                 if self.app.verify_admin_key(admin_key):
                     session_cookie = self.app.make_session_cookie()
@@ -1839,9 +2070,39 @@ document.querySelectorAll("[data-confirm-danger]").forEach((form) => {
 
 
 class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
     def __init__(self, address: tuple[str, int], app: WebApp) -> None:
         super().__init__(address, Handler)
         self.app = app
+        self._thread_slots = threading.BoundedSemaphore(MAX_WEB_THREADS)
+
+    def get_request(self):  # noqa: ANN201
+        request, client_address = super().get_request()
+        request.settimeout(20)
+        return request, client_address
+
+    def process_request(self, request, client_address) -> None:  # noqa: ANN001
+        if not self._thread_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\nContent-Length: 0\r\nRetry-After: 5\r\n\r\n"
+                )
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._thread_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:  # noqa: ANN001
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._thread_slots.release()
 
 
 def build_parser() -> argparse.ArgumentParser:

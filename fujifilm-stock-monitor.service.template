@@ -13,6 +13,22 @@ Environment=STATE_FILE=__CONFIG_DIR__/state.json
 ExecStart=__INSTALL_DIR__/run.sh
 Restart=on-failure
 RestartSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__CONFIG_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=160M
+TasksMax=32
+CPUQuota=40%
 
 [Install]
 WantedBy=default.target

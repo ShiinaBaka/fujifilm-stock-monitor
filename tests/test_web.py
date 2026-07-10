@@ -33,6 +33,12 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             web.validate_fujifilm_url("http://mall-jp.fujifilm.com/shop/g/g16587294/")
 
+    def test_public_url_rejects_private_ip(self) -> None:
+        with self.assertRaises(ValueError):
+            web.validate_public_https_url("https://127.0.0.1/hook", "Webhook URL", resolve=False)
+        with self.assertRaises(ValueError):
+            web.validate_public_https_url("http://example.com/hook", "Webhook URL", resolve=False)
+
     def test_add_url_writes_config_task(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -265,7 +271,35 @@ class WebTests(unittest.TestCase):
             token = app.make_challenge_token("login", "abc")
             self.assertEqual(app.verify_challenge_token(token, "login"), "abc")
             with self.assertRaises(ValueError):
-                app.verify_challenge_token(token, "register")
+                app.verify_challenge_token(token, "login")
+
+    def test_rate_limiter_applies_per_client(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app = web.WebApp(
+                argparse.Namespace(
+                    config=Path(td) / "config.json", service_name="test.service", install_dir=Path(td),
+                    token="", admin_key_hash=web.make_admin_key_hash("secret"), session_secret="session-secret",
+                    secure_cookie=False, rp_id="", rp_name="", allowed_origin="", allow_no_auth=False,
+                    systemctl_scope="user",
+                )
+            )
+            self.assertTrue(app.allow_request("login", "192.0.2.1", 2, 10))
+            self.assertTrue(app.allow_request("login", "192.0.2.1", 2, 10))
+            self.assertFalse(app.allow_request("login", "192.0.2.1", 2, 10))
+            self.assertTrue(app.allow_request("login", "192.0.2.2", 2, 10))
+
+    def test_image_cache_is_bounded(self) -> None:
+        cache = web.ImageCache(max_items=1, max_bytes=10)
+        cache.put("first", "image/png", b"1234", 60)
+        cache.put("second", "image/png", b"5678", 60)
+        self.assertIsNone(cache.get("first"))
+        self.assertEqual(cache.get("second"), ("image/png", b"5678", 60))
+
+    def test_passkey_sign_count_must_increase(self) -> None:
+        web.validate_sign_count(5, 6)
+        web.validate_sign_count(0, 0)
+        with self.assertRaises(ValueError):
+            web.validate_sign_count(5, 5)
 
     def test_cbor_decode_simple_map(self) -> None:
         self.assertEqual(web.cbor_decode(bytes.fromhex("a201020363616263")), {1: 2, 3: "abc"})

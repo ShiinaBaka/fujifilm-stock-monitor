@@ -49,6 +49,15 @@ def args(tmp: Path, html_name: str, **overrides) -> argparse.Namespace:
 
 
 class MonitorTests(unittest.TestCase):
+    def test_monitor_url_is_restricted_to_fujifilm(self) -> None:
+        self.assertEqual(monitor.validate_monitor_url(BASE_URL), BASE_URL)
+        with self.assertRaises(RuntimeError):
+            monitor.validate_monitor_url("https://127.0.0.1/internal")
+
+    def test_notification_url_rejects_private_ip(self) -> None:
+        with self.assertRaises(ValueError):
+            monitor.validate_public_https_url("https://127.0.0.1/hook", "Webhook URL")
+
     def test_parse_soldout_fixture(self) -> None:
         html = (FIXTURES / "mini_soldout.html").read_text()
         products = monitor.parse_products(html, BASE_URL)

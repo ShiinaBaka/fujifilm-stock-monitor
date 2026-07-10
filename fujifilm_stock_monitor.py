@@ -12,6 +12,7 @@ import argparse
 import fcntl
 import http.cookiejar
 import html
+import ipaddress
 import json
 import os
 import platform
@@ -43,6 +44,40 @@ USER_AGENT = (
 COOKIE_JAR = http.cookiejar.CookieJar()
 OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(COOKIE_JAR))
 IPV4_FORCED = False
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirectHandler())
+
+
+def validate_monitor_url(raw_url: str) -> str:
+    parsed = urllib.parse.urlparse(raw_url)
+    if parsed.scheme != "https" or parsed.netloc != "mall-jp.fujifilm.com":
+        raise RuntimeError("Monitor URL must use https://mall-jp.fujifilm.com.")
+    if not (parsed.path.startswith("/shop/g/") or parsed.path.startswith("/shop/c/")):
+        raise RuntimeError("Monitor URL must be a Fujifilm product or category page.")
+    return raw_url
+
+
+def validate_public_https_url(raw_url: str, label: str) -> str:
+    parsed = urllib.parse.urlparse(raw_url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError(f"{label} must be a public HTTPS URL.")
+    try:
+        port = parsed.port or 443
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+        }
+    except (ValueError, socket.gaierror):
+        raise ValueError(f"{label} host cannot be resolved.") from None
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise ValueError(f"{label} cannot target local, private, or reserved addresses.")
+    return raw_url
 
 
 @dataclass
@@ -251,8 +286,14 @@ def write_state(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def save_state(path: Path, products: Iterable[Product]) -> None:
+def save_state(
+    path: Path,
+    products: Iterable[Product],
+    history_task_name: str = "",
+    history_products: Iterable[Product] = (),
+) -> None:
     products = list(products)
+    history_products = list(history_products)
     previous = load_full_state(path)
     payload = {
         **previous,
@@ -270,31 +311,24 @@ def save_state(path: Path, products: Iterable[Product]) -> None:
             for product in products
         },
     }
+    if history_task_name and history_products:
+        history = previous.get("stock_history", [])
+        if not isinstance(history, list):
+            history = []
+        detected_at = datetime.now().isoformat(timespec="seconds")
+        history.extend(
+            {
+                "detected_at": detected_at,
+                "task": history_task_name,
+                "name": product.name,
+                "price": product.price,
+                "url": product.url,
+                "image_url": product.image_url,
+            }
+            for product in history_products
+        )
+        payload["stock_history"] = history[-200:]
     write_state(path, payload)
-
-
-def record_stock_history(path: Path, task_name: str, products: Iterable[Product]) -> None:
-    products = list(products)
-    if not products:
-        return
-    state = load_full_state(path)
-    history = state.get("stock_history", [])
-    if not isinstance(history, list):
-        history = []
-    detected_at = datetime.now().isoformat(timespec="seconds")
-    history.extend(
-        {
-            "detected_at": detected_at,
-            "task": task_name,
-            "name": product.name,
-            "price": product.price,
-            "url": product.url,
-            "image_url": product.image_url,
-        }
-        for product in products
-    )
-    state["stock_history"] = history[-200:]
-    write_state(path, state)
 
 
 def save_failure(path: Path, error: str) -> tuple[int, int]:
@@ -396,6 +430,7 @@ def mac_notify(title: str, message: str, sound: str | None = "Glass") -> None:
 
 
 def webhook_notify(webhook_url: str, title: str, message: str) -> None:
+    webhook_url = validate_public_https_url(webhook_url, "Webhook URL")
     body = json.dumps({"text": f"{title}\n{message}"}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
@@ -403,7 +438,7 @@ def webhook_notify(webhook_url: str, title: str, message: str) -> None:
         headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=15):
+    with NO_REDIRECT_OPENER.open(request, timeout=15):
         pass
 
 
@@ -412,6 +447,7 @@ def ntfy_notify(topic_or_url: str, title: str, message: str, first_url: str) -> 
         url = topic_or_url
     else:
         url = "https://ntfy.sh/" + topic_or_url.strip("/")
+    url = validate_public_https_url(url, "ntfy URL")
 
     body_text = message if first_url in message else message + "\n" + first_url
     body = body_text.encode("utf-8")
@@ -426,7 +462,7 @@ def ntfy_notify(topic_or_url: str, title: str, message: str, first_url: str) -> 
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=15):
+    with NO_REDIRECT_OPENER.open(request, timeout=15):
         pass
 
 
@@ -596,7 +632,7 @@ def run_check(args: argparse.Namespace) -> int:
     if args.html_file:
         page_html = Path(args.html_file).read_text(encoding=args.html_encoding)
     else:
-        page_html = fetch_page(args.url, args.timeout)
+        page_html = fetch_page(validate_monitor_url(args.url), args.timeout)
 
     if args.require_text and not has_category_heading(page_html, args.require_text):
         raise RuntimeError(f"Required category heading not found: {args.require_text}")
@@ -632,8 +668,7 @@ def run_check(args: argparse.Namespace) -> int:
             and product.url not in monthly_notified
         ]
 
-        save_state(args.state_file, products)
-        record_stock_history(args.state_file, args.task_name, newly_available)
+        save_state(args.state_file, products, args.task_name, newly_available)
 
     in_stock = [product for product in products if product.in_stock]
     sold_out_count = len(products) - len(in_stock)

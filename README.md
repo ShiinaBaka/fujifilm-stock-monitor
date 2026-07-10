@@ -109,6 +109,8 @@ http://127.0.0.1:8765
 - 不要公开备用密钥；配置文件里只保存 `FUJIFILM_ADMIN_KEY_HASH`。
 - Passkey credential public key 保存在配置目录的 `webauthn_credentials.json`。
 - Web 控制台只接受 Fujifilm Mall 的商品页和分类页链接。
+- 自定义 ntfy URL 和 Webhook 只允许解析到公网地址的 HTTPS 链接。
+- Web 服务内置登录限速、有界工作线程和有界图片缓存；systemd 模板同时限制内存、任务数与 CPU。
 
 ## 测试
 
@@ -243,6 +245,8 @@ STOCK_NTFY_TOPIC=my-private-topic-name
 ```bash
 STOCK_WEBHOOK_URL=https://example.com/webhook
 ```
+
+Webhook 必须使用 HTTPS，且目标域名不能解析到本机、内网、链路本地或保留地址。出站请求不会跟随重定向。
 
 请求体格式：
 
